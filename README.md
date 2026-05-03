@@ -1,3 +1,17 @@
+██╗      ██████╗  ██████╗  ██████╗ ███████╗
+██║     ██╔═══██╗██╔════╝ ██╔═══██╗██╔════╝
+██║     ██║   ██║██║  ███╗██║   ██║███████╗
+██║     ██║   ██║██║   ██║██║   ██║╚════██║
+███████╗╚██████╔╝╚██████╔╝╚██████╔╝███████║
+╚══════╝ ╚═════╝  ╚═════╝  ╚═════╝ ╚══════╝
+
+        ███████╗██╗     ██╗   ██╗██╗  ██╗
+        ██╔════╝██║     ██║   ██║╚██╗██╔╝
+        █████╗  ██║     ██║   ██║ ╚███╔╝ 
+        ██╔══╝  ██║     ██║   ██║ ██╔██╗ 
+        ██║     ███████╗╚██████╔╝██╔╝ ██╗
+        ╚═╝     ╚══════╝ ╚═════╝ ╚═╝  ╚═╝
+
 # Omega
 
 Open-source agent chat stack: streaming chat API, assistant-ui frontend, sandbox
@@ -151,14 +165,6 @@ by env (`COMPUTE_PROVIDER`) so adding a new one doesn't touch any routes.
   Drive crawls. Requires either a static refresh token (`OAUTH_PROVIDER=env`)
   or the controller's token-mint endpoint (`OAUTH_PROVIDER=controller`,
   needs `ENABLE_GOOGLE_OAUTH=true`).
-
-## Status
-
-This is **v0.1.0 — initial alpha release.** The code is the production
-stack the precursor (`52Launch-Inc/*`) ran in private; the OSS build
-strips all 52Launch-specific identifiers, swaps Cloudflare Access for a
-single-user stub, and adds Docker as a first-class compute provider.
-Expect rough edges; PRs welcome.
 
 ## License
 
