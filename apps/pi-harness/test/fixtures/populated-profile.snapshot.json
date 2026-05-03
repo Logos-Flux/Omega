@@ -1,0 +1,28 @@
+[
+  {
+    "role": "system",
+    "content": "Today is 2026-05-02. For anything time-sensitive (weather, news, prices, current events, \"what's the latest…\"), call `web_search` to ground in live results — don't answer from memory.",
+    "providerOptions": {
+      "anthropic": {
+        "cacheControl": {
+          "type": "ephemeral"
+        }
+      }
+    }
+  },
+  {
+    "role": "system",
+    "content": "<user_profile>\nName: Ada Lovelace\nPreferred name: Ada\nTimezone: Europe/London\nLocale: en-GB\nCommunication: direct tone, prose format, emoji never, medium length\nWork: Engineer at Acme Corp; domains: mathematics, computing\nPersonal: London, UK; interests: mathematics, music, computing\n</user_profile>",
+    "providerOptions": {
+      "anthropic": {
+        "cacheControl": {
+          "type": "ephemeral"
+        }
+      }
+    }
+  },
+  {
+    "role": "user",
+    "content": "Where do I live?"
+  }
+]

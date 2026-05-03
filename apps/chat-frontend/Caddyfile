@@ -1,0 +1,42 @@
+# Caddy serves the built SPA on :8080. The two backend routes are read
+# from env vars so the same image works in compose and on Fly:
+#   CHAT_API_UPSTREAM     — defaults to http://chat-api:3000
+#   CONTROLLER_UPSTREAM   — defaults to http://controller:3001
+#
+# Frontend code uses relative URLs:
+#   /api/*               → chat-api
+#   /api/controller/*    → controller (rewritten to /api/* upstream)
+
+:8080 {
+	encode gzip
+
+	# Controller proxy — must come before /api/* below.
+	handle /api/controller/* {
+		uri strip_prefix /api/controller
+		reverse_proxy {$CONTROLLER_UPSTREAM:http://controller:3001} {
+			header_up Host {upstream_hostport}
+		}
+	}
+
+	# chat-api proxy.
+	handle /api/* {
+		reverse_proxy {$CHAT_API_UPSTREAM:http://chat-api:3000} {
+			header_up Host {upstream_hostport}
+		}
+	}
+
+	# Static SPA + fallback.
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+
+		@hashed path_regexp \.(js|css|png|jpg|jpeg|svg|webp|woff2|ico)$
+		header @hashed Cache-Control "public, max-age=31536000, immutable"
+		header /index.html Cache-Control "no-cache"
+	}
+
+	handle /healthz {
+		respond "ok" 200
+	}
+}

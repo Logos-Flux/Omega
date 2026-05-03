@@ -1,0 +1,7 @@
+@import "tailwindcss";
+@import "@omega-inc/app-shell/styles.css";
+
+/* Tailwind v4 doesn't scan node_modules by default. Tell it to look at the
+ * app-shell dist so utility classes used inside the package's components
+ * (ml-auto, w-full, gap-*, etc.) get compiled. */
+@source "../node_modules/@omega-inc/app-shell/dist/**/*.js";

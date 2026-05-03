@@ -1,0 +1,3 @@
+/* Reserved for shared shell styles. Frontends import this from
+ * @omega-inc/app-shell/styles.css to keep the path stable across both
+ * the OSS workspace package and any future published version. */

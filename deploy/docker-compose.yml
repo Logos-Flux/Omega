@@ -1,0 +1,154 @@
+# One-shot local stack for Omega.
+#
+#   cd deploy && docker compose up --build
+#
+# Brings up:
+#   - postgres        Postgres 16 with omega.* + chat.* + pi.* + rag.* schemas
+#   - redis           Redis 7 (BullMQ backend, future use)
+#   - chat-api        Streaming chat API on :3000
+#   - controller      Sandbox orchestrator on :3001 (talks to docker.sock)
+#   - chat-frontend   SPA + Caddy on :8080, /api/* → chat-api, /api/controller/* → controller
+#   - rag-api         RAG wrapper on :3100 (point RAGFLOW_BASE_URL at your own RAGFlow)
+#
+# pi-harness is NOT a fixed service — the controller spawns one per user via
+# the Docker daemon socket, using the omega-pi-harness:local image built below.
+#
+# Bring your own provider keys (ANTHROPIC_API_KEY, GOOGLE_API_KEY,
+# PERPLEXITY_API_KEY) and a HARNESS_JWT_SECRET via env or a .env file
+# in this directory.
+#
+# Important: HARNESS_JWT_SECRET, RAG_ADMIN_BEARER_TOKEN, and
+# RAG_DEV_BEARER_TOKEN have `dev-only-...` placeholder defaults below so
+# `docker compose up` works out of the box for local exploration. The
+# controller and pi-harness now refuse to start when NODE_ENV=production
+# AND any of these still start with `dev-only-` — generate real values
+# (e.g. `openssl rand -hex 32`) and pass them in via .env before deploying
+# anything operator-facing.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: omega
+      POSTGRES_PASSWORD: omega
+      POSTGRES_DB: omega
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U omega"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    ports:
+      - "6379:6379"
+
+  chat-api:
+    build:
+      context: ../apps/chat-api
+      dockerfile: Dockerfile
+    image: omega-chat-api:local
+    environment:
+      DATABASE_URL: postgresql://omega:omega@postgres:5432/omega
+      DEFAULT_USER_EMAIL: local@localhost
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      PERPLEXITY_API_KEY: ${PERPLEXITY_API_KEY:-}
+      NODE_ENV: production
+      PORT: "3000"
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  pi-harness-image:
+    # Build-only sidecar so docker compose pre-builds the harness image.
+    # The controller then runs containers off this image via DockerProvider.
+    build:
+      context: ../apps/pi-harness
+      dockerfile: Dockerfile
+    image: omega-pi-harness:local
+    command: ["echo", "harness image built"]
+    restart: "no"
+
+  controller:
+    build:
+      context: ../apps/controller
+      dockerfile: Dockerfile
+    image: omega-controller:local
+    environment:
+      DATABASE_URL: postgresql://omega:omega@postgres:5432/omega
+      DEFAULT_USER_EMAIL: local@localhost
+      COMPUTE_PROVIDER: docker
+      HARNESS_IMAGE: omega-pi-harness:local
+      DOCKER_SOCKET: /var/run/docker.sock
+      HARNESS_NETWORK: ${COMPOSE_PROJECT_NAME:-omega}_default
+      HARNESS_HOST_URL_BASE: http://localhost
+      HARNESS_JWT_SECRET: ${HARNESS_JWT_SECRET:-dev-only-change-me-32-bytes-hex}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      PERPLEXITY_API_KEY: ${PERPLEXITY_API_KEY:-}
+      ENABLE_GOOGLE_OAUTH: "false"
+      NODE_ENV: production
+      PORT: "3001"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - "3001:3001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      pi-harness-image:
+        condition: service_completed_successfully
+
+  rag-api:
+    build:
+      context: ../apps/rag-api/api
+      dockerfile: Dockerfile
+    image: omega-rag-api:local
+    environment:
+      DATABASE_URL: postgresql://omega:omega@postgres:5432/omega
+      RAGFLOW_BASE_URL: ${RAGFLOW_BASE_URL:-http://host.docker.internal:9380}
+      RAGFLOW_API_KEY: ${RAGFLOW_API_KEY:-}
+      ADMIN_BEARER_TOKEN: ${RAG_ADMIN_BEARER_TOKEN:-dev-only-rag-token}
+      DEV_BEARER_TOKEN: ${RAG_DEV_BEARER_TOKEN:-dev-only-rag-token}
+      OAUTH_PROVIDER: env
+      NODE_ENV: production
+      PORT: "3100"
+    ports:
+      - "3100:3100"
+    # Migrations live at apps/rag-api/migrations/ — outside the api build
+    # context — so we bind-mount them at runtime instead of baking in.
+    volumes:
+      - ../apps/rag-api/migrations:/app/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  chat-frontend:
+    build:
+      context: ..
+      dockerfile: apps/chat-frontend/Dockerfile
+    image: omega-chat-frontend:local
+    environment:
+      CHAT_API_UPSTREAM: http://chat-api:3000
+      CONTROLLER_UPSTREAM: http://controller:3001
+    ports:
+      - "8080:8080"
+    depends_on:
+      - chat-api
+      - controller
+
+volumes:
+  pgdata:
+  redisdata:

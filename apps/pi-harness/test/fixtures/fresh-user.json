@@ -1,0 +1,13 @@
+{
+  "description": "Fresh user, first turn. Empty memory, no conversation history, no uploads, no skills installed. Anthropic provider so the system message gets the web_search grounding hint.",
+  "sessionId": "fresh-user-session",
+  "latestUserText": "Hello, who are you?",
+  "provider": "anthropic",
+  "now": "2026-05-02T12:00:00.000Z",
+  "workspace": {
+    "memory": null,
+    "conversation": [],
+    "uploads": [],
+    "skills": []
+  }
+}

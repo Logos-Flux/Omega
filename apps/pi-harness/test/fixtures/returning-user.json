@@ -1,0 +1,26 @@
+{
+  "description": "Returning user. Populated memory.md with a few dated facts, two prior turns of conversation, no uploads, no skills installed. Anthropic provider.",
+  "sessionId": "returning-user-session",
+  "latestUserText": "What did we decide about the deployment cadence?",
+  "provider": "anthropic",
+  "now": "2026-05-02T12:00:00.000Z",
+  "workspace": {
+    "memory": "## 2026-04-20\n- User prefers concise answers, no preamble.\n- Lives in London, UK.\n\n## 2026-04-28\n- Decided to ship pi-harness updates on Tuesdays.\n",
+    "conversation": [
+      {
+        "ts": "2026-04-29T09:00:00.000Z",
+        "role": "user",
+        "text": "Remind me what we settled on for releases."
+      },
+      {
+        "ts": "2026-04-29T09:00:05.000Z",
+        "role": "assistant",
+        "text": "Tuesday deploys for pi-harness; everything else stays ad-hoc.",
+        "provider": "anthropic",
+        "model": "claude-sonnet-4-20250514"
+      }
+    ],
+    "uploads": [],
+    "skills": []
+  }
+}

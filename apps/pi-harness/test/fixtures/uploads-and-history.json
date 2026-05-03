@@ -1,0 +1,43 @@
+{
+  "description": "Multi-turn user with uploads catalog and two installed skills. Google (Gemini) provider so the grounding hint references google_search and the skills block lands in the system message alongside <uploads>.",
+  "sessionId": "uploads-history-session",
+  "latestUserText": "Can you summarise the brief I uploaded?",
+  "provider": "google",
+  "now": "2026-05-02T12:00:00.000Z",
+  "workspace": {
+    "memory": "## 2026-05-01\n- Working on the Q2 product brief review.\n",
+    "conversation": [
+      {
+        "ts": "2026-05-02T10:00:00.000Z",
+        "role": "user",
+        "text": "I am about to upload a brief; please be ready to summarise it."
+      },
+      {
+        "ts": "2026-05-02T10:00:02.000Z",
+        "role": "assistant",
+        "text": "Got it — go ahead and upload, then ask for the summary.",
+        "provider": "google",
+        "model": "gemini-2.5-pro"
+      },
+      {
+        "ts": "2026-05-02T10:05:00.000Z",
+        "role": "user",
+        "text": "Uploaded. It is the Q2 brief PDF."
+      }
+    ],
+    "uploads": [
+      { "filename": "q2-brief.pdf", "size": 184320 },
+      { "filename": "appendix.md", "size": 2048 }
+    ],
+    "skills": [
+      {
+        "name": "summarize",
+        "description": "Produce a concise multi-section summary of a long document, preserving headings and key facts."
+      },
+      {
+        "name": "pdf-extract",
+        "description": "Extract text from an uploaded PDF using pdftotext via the exec tool, then operate on the extracted text."
+      }
+    ]
+  }
+}

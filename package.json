@@ -1,0 +1,21 @@
+{
+  "name": "omega",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Open-source agent chat stack: streaming chat API, assistant-ui frontend, sandbox compute orchestrator, pi-harness agent runtime, and RAG service.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Logos-Flux/Omega.git"
+  },
+  "homepage": "https://github.com/Logos-Flux/Omega",
+  "workspaces": [
+    "apps/*",
+    "apps/rag-api/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "bun run --cwd apps/chat-api build && bun run --cwd apps/controller build && bun run --cwd apps/chat-frontend build && bun run --cwd apps/rag-api/api build && bun run --cwd apps/rag-api/ingest build && bun run --cwd apps/pi-harness build",
+    "type-check": "bun run --cwd apps/chat-api type-check && bun run --cwd apps/controller type-check && bun run --cwd apps/chat-frontend type-check"
+  }
+}

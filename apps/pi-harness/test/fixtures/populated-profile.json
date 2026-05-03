@@ -1,0 +1,34 @@
+{
+  "description": "Returning user with a populated profile.json — exercises assembler slot 3 (Phase II.A.3). Anthropic provider so slot 3 carries the cacheControl marker. Empty memory, no conversation, no uploads, no skills, so the snapshot isolates the slot 3 contribution.",
+  "sessionId": "populated-profile-session",
+  "latestUserText": "Where do I live?",
+  "provider": "anthropic",
+  "now": "2026-05-02T12:00:00.000Z",
+  "workspace": {
+    "memory": null,
+    "conversation": [],
+    "uploads": [],
+    "skills": [],
+    "profile": {
+      "name": "Ada Lovelace",
+      "preferred_name": "Ada",
+      "timezone": "Europe/London",
+      "locale": "en-GB",
+      "communication": {
+        "tone_default": "direct",
+        "format_preference": "prose",
+        "emoji": "never",
+        "length_preference": "medium"
+      },
+      "work": {
+        "company": "Acme Corp",
+        "role": "Engineer",
+        "domains": ["mathematics", "computing"]
+      },
+      "personal": {
+        "location": "London, UK",
+        "interests": ["mathematics", "music", "computing"]
+      }
+    }
+  }
+}

@@ -1,0 +1,36 @@
+[
+  {
+    "role": "system",
+    "content": "Today is 2026-05-02. For anything time-sensitive (weather, news, prices, current events, \"what's the latest…\"), call `web_search` to ground in live results — don't answer from memory.",
+    "providerOptions": {
+      "anthropic": {
+        "cacheControl": {
+          "type": "ephemeral"
+        }
+      }
+    }
+  },
+  {
+    "role": "system",
+    "content": "Persistent memory:\n\n## 2026-04-20\n- User prefers concise answers, no preamble.\n- Lives in London, UK.\n\n## 2026-04-28\n- Decided to ship pi-harness updates on Tuesdays.\n",
+    "providerOptions": {
+      "anthropic": {
+        "cacheControl": {
+          "type": "ephemeral"
+        }
+      }
+    }
+  },
+  {
+    "role": "user",
+    "content": "Remind me what we settled on for releases."
+  },
+  {
+    "role": "assistant",
+    "content": "Tuesday deploys for pi-harness; everything else stays ad-hoc."
+  },
+  {
+    "role": "user",
+    "content": "What did we decide about the deployment cadence?"
+  }
+]

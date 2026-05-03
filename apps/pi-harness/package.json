@@ -1,0 +1,30 @@
+{
+  "name": "pi-harness",
+  "version": "0.1.0",
+  "description": "Omega Pi harness — long-running Bun service that lives inside a per-user Sprite environment.",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "dev": "bun run --watch src/index.ts",
+    "type-check": "tsc --noEmit",
+    "test": "bun test",
+    "test:update": "UPDATE_SNAPSHOTS=1 bun test"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.72",
+    "@ai-sdk/google": "^3.0.65",
+    "@ai-sdk/perplexity": "^3.0.30",
+    "@ai-sdk/provider-utils": "^3.0.7",
+    "ai": "^6.0.168",
+    "zod": "^4.4.1"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.4.0"
+  },
+  "engines": {
+    "bun": ">=1.0.0"
+  }
+}

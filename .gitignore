@@ -1,0 +1,20 @@
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+.DS_Store
+*.log
+.env
+.env.local
+.env.production
+*.tsbuildinfo
+deploy/.env
+
+# Editor/agent local state
+.claude/
+.idea/
+.vscode/
+
+# Internal release-process docs (not part of the public release)
+RELEASE_CHECKLIST.md
+RELEASE_CHECKLIST_OMEGA.md

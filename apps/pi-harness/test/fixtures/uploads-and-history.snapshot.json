@@ -1,0 +1,30 @@
+[
+  {
+    "role": "system",
+    "content": "Today is 2026-05-02. For anything time-sensitive (weather, news, prices, current events, \"what's the latest…\"), call `google_search` to ground in live results — don't answer from memory."
+  },
+  {
+    "role": "system",
+    "content": "Persistent memory:\n\n## 2026-05-01\n- Working on the Q2 product brief review.\n"
+  },
+  {
+    "role": "system",
+    "content": "You have access to the following skills. Each skill is a packaged set of\ninstructions for handling a specific kind of task. The full body of each\nskill is hidden by default — call the `read_skill` tool with the skill\nname to load its instructions on demand, then follow them.\n\n<available_skills>\n  <skill name=\"pdf-extract\">Extract text from an uploaded PDF using pdftotext via the exec tool, then operate on the extracted text.</skill>\n  <skill name=\"summarize\">Produce a concise multi-section summary of a long document, preserving headings and key facts.</skill>\n</available_skills>"
+  },
+  {
+    "role": "system",
+    "content": "Files the user uploaded to this session. Call read_upload(filename)\nto fetch the contents when relevant.\n\n<uploads>\n  <file name=\"appendix.md\" bytes=\"2048\"/>\n  <file name=\"q2-brief.pdf\" bytes=\"184320\"/>\n</uploads>"
+  },
+  {
+    "role": "user",
+    "content": "I am about to upload a brief; please be ready to summarise it."
+  },
+  {
+    "role": "assistant",
+    "content": "Got it — go ahead and upload, then ask for the summary."
+  },
+  {
+    "role": "user",
+    "content": "Uploaded. It is the Q2 brief PDF.\n\nCan you summarise the brief I uploaded?"
+  }
+]
