@@ -384,7 +384,10 @@ oauthRoutes.get('/google/callback', async (c) => {
   return c.redirect(payload.returnTo, 302)
 })
 
-// /status — JWT-gated. Returns connection state for each provider.
+// /status — JWT-gated. Existence-only check: row present ⇒ connected.
+// Cheap, but doesn't catch revocation / decrypt failure / scope drift, so
+// the SPA gate uses /health (below) instead. Kept for debugging + admin
+// views.
 oauthRoutes.get('/google/status', requireSession, async (c) => {
   const user = c.get('user')
   const row = await readTokenRow(user.id, 'google').catch((err) => {
@@ -400,6 +403,99 @@ oauthRoutes.get('/google/status', requireSession, async (c) => {
       scopes: row.scopes,
       granted_at: row.granted_at,
     },
+  })
+})
+
+// /health — JWT-gated. Real round-trip to Google to prove the stored grant
+// still mints. Replaces /status as the SPA gate's source of truth: a row
+// existing only proves "this user once consented", not that the grant
+// still works. Without /health, a revoked refresh_token / rotated enc-key
+// / missing scope leaves the user permanently past the gate with a
+// quietly broken harness.
+//
+// Reasons returned with `ok: false`:
+//   no_grant       — no row; user has never consented (or row was deleted)
+//   revoked        — Google rejected the refresh; row deleted, must reconsent
+//   decrypt_failed — row ciphertext unusable (likely OAUTH_TOKEN_ENC_KEY
+//                    rotated). Row preserved for operator inspection; user
+//                    re-consenting overwrites it via /callback's UPSERT.
+//   transient      — Google 5xx / network blip. Row preserved. SPA should
+//                    show retry, NOT the consent screen.
+//   misconfigured  — server missing GOOGLE_OAUTH_CLIENT_ID/SECRET.
+//
+// All non-error responses are 200 so the SPA can branch on `reason` without
+// inspecting status codes. Cache-Control: no-store because we just minted
+// (and discarded) a real access token.
+oauthRoutes.get('/google/health', requireSession, async (c) => {
+  c.header('Cache-Control', 'no-store')
+  const user = c.get('user')
+
+  const ct = await readRefreshTokenCt(user.id, 'google').catch((err) => {
+    console.error('[oauth] /health refresh-token read failed:', err)
+    return null
+  })
+  if (!ct) {
+    return c.json({ ok: false, reason: 'no_grant' as const })
+  }
+
+  let refreshToken: string
+  try {
+    refreshToken = decryptToken(ct)
+  } catch (err) {
+    console.error(`[oauth] /health decryptToken failed for user ${user.id}:`, err)
+    return c.json({ ok: false, reason: 'decrypt_failed' as const })
+  }
+
+  let cfg
+  try {
+    cfg = googleClientConfig()
+  } catch (err) {
+    console.error('[oauth] /health google client misconfigured:', (err as Error).message)
+    return c.json({ ok: false, reason: 'misconfigured' as const }, 503)
+  }
+
+  const result = await exchangeRefreshToken({
+    refreshToken,
+    clientId: cfg.clientId,
+    clientSecret: cfg.clientSecret,
+  })
+
+  if (result.kind === 'revoked') {
+    console.warn(
+      `[oauth] /health: google rejected refresh token for user ${user.id} ` +
+        `(status=${result.status}); deleting row.`,
+    )
+    await deleteTokenRow(user.id, 'google').catch((err) => {
+      console.error('[oauth] /health failed to delete revoked token row:', err)
+    })
+    return c.json({ ok: false, reason: 'revoked' as const })
+  }
+  if (result.kind === 'transient') {
+    console.error(
+      `[oauth] /health: google token exchange transient failure ` +
+        `(status=${result.status}): ${result.body}`,
+    )
+    return c.json({ ok: false, reason: 'transient' as const })
+  }
+
+  // Successful mint. Bump last_refreshed_at + sync scopes so /status reflects
+  // reality, then discard the access token (the SPA never sees it).
+  const newScopes =
+    typeof result.body.scope === 'string'
+      ? result.body.scope.split(/\s+/).filter((s) => s.length > 0)
+      : null
+  await bumpRefreshedAt({ userId: user.id, provider: 'google', scopes: newScopes }).catch(
+    (err) => {
+      console.error('[oauth] /health bumpRefreshedAt failed:', err)
+    },
+  )
+
+  // Re-read the row so the response carries the freshly-bumped values.
+  const row = await readTokenRow(user.id, 'google').catch(() => null)
+  return c.json({
+    ok: true as const,
+    scopes: row?.scopes ?? newScopes ?? [],
+    granted_at: row?.granted_at ?? null,
   })
 })
 

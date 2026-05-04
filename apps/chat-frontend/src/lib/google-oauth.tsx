@@ -1,9 +1,13 @@
 // Phase 0.B.4 — Google OAuth status probe + onboarding gate state.
 //
 // After the user is CF-Access-authenticated, the SPA calls
-// `/api/controller/api/oauth/google/status` (proxied by Caddy) to see
-// whether the user has Google OAuth tokens stored on the controller. If
-// not, <App> renders the connect-Google gate instead of the chat surface.
+// `/api/controller/api/oauth/google/health` (proxied by Caddy) which does
+// a real refresh-token exchange against Google. The earlier /status route
+// only checked row existence and produced a permanent dead-end whenever a
+// stored grant rotted (revoked, decrypt failure, scope drift): the gate
+// passed but the harness silently couldn't mint. /health distinguishes
+// "really connected" from "row exists but mint fails" so the SPA can
+// re-prompt for consent or surface a transient-error retry.
 //
 // Status is held in-memory only (not persisted) — per the roadmap deliverable.
 // The "skip for now" escape hatch is recorded in sessionStorage so it
@@ -20,7 +24,7 @@ import {
 } from 'react'
 
 const API_BASE = (import.meta.env.BASE_URL ?? '/').replace(/\/$/, '')
-const STATUS_URL = `${API_BASE}/api/controller/api/oauth/google/status`
+const HEALTH_URL = `${API_BASE}/api/controller/api/oauth/google/health`
 const SKIP_KEY = '52l.chat.googleConnect.skipped'
 
 export type GoogleStatusState =
@@ -44,13 +48,12 @@ export function useGoogleOAuth(): GoogleOAuthValue {
   return ctx
 }
 
-interface GoogleStatusResponse {
-  google: {
-    connected: boolean
-    scopes: string[]
-    granted_at: string | null
-  }
-}
+type GoogleHealthResponse =
+  | { ok: true; scopes: string[]; granted_at: string | null }
+  | {
+      ok: false
+      reason: 'no_grant' | 'revoked' | 'decrypt_failed' | 'transient' | 'misconfigured'
+    }
 
 export function GoogleOAuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<GoogleStatusState>({ kind: 'loading' })
@@ -66,14 +69,32 @@ export function GoogleOAuthProvider({ children }: { children: ReactNode }) {
   const refresh = useCallback(async () => {
     setState({ kind: 'loading' })
     try {
-      const res = await fetch(STATUS_URL, { credentials: 'include' })
-      if (!res.ok) {
-        setState({ kind: 'error', message: `status probe returned ${res.status}` })
+      const res = await fetch(HEALTH_URL, { credentials: 'include' })
+      if (!res.ok && res.status !== 503) {
+        // 503 carries a structured `misconfigured` body — let the JSON parse
+        // run. Anything else (404 from a stale Caddy, 500 unexpected) → error.
+        setState({ kind: 'error', message: `health probe returned ${res.status}` })
         return
       }
-      const data = (await res.json()) as GoogleStatusResponse
-      const connected = !!data?.google?.connected
-      setState({ kind: 'ready', connected })
+      const data = (await res.json()) as GoogleHealthResponse
+      if (data.ok) {
+        setState({ kind: 'ready', connected: true })
+        return
+      }
+      // Transient + misconfigured are server-side problems we don't want to
+      // resolve by forcing a re-consent loop — show the retry screen instead.
+      if (data.reason === 'transient' || data.reason === 'misconfigured') {
+        setState({
+          kind: 'error',
+          message:
+            data.reason === 'transient'
+              ? 'Google check temporarily unavailable'
+              : 'Google OAuth not configured on the server',
+        })
+        return
+      }
+      // no_grant | revoked | decrypt_failed → user needs to (re)consent.
+      setState({ kind: 'ready', connected: false })
     } catch (err) {
       const message = err instanceof Error ? err.message : 'network error'
       setState({ kind: 'error', message })
