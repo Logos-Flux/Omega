@@ -122,10 +122,20 @@ console.log('[apply] npm globals…')
     const have = installed[g.name]?.version
     if (have === g.version) {
       console.log(`  ${g.name}@${g.version}  (already installed)`)
-      continue
+    } else {
+      console.log(`  installing ${g.name}@${g.version} (was: ${have ?? 'not installed'})`)
+      mustShell(`sudo ${npm} install -g --silent ${g.name}@${g.version}`, `npm install ${g.name}`)
     }
-    console.log(`  installing ${g.name}@${g.version} (was: ${have ?? 'not installed'})`)
-    mustShell(`sudo ${npm} install -g --silent ${g.name}@${g.version}`, `npm install ${g.name}`)
+    // Symlink each connector binary into /.sprite/bin so the harness's
+    // exec PATH (which only lists /.sprite/bin + the FHS dirs) can find
+    // it. Without this, `gccli` etc. resolve to "command not found" inside
+    // the harness even though npm installed them under
+    // /.sprite/languages/node/<v>/bin/. Idempotent (-sf overwrites).
+    const binSrc = `${npmPathRaw.replace(/\/npm$/, '')}/${g.binary}`
+    mustShell(
+      `sudo ln -sf ${binSrc} /.sprite/bin/${g.binary}`,
+      `symlink ${g.binary} → /.sprite/bin/`,
+    )
   }
 }
 
