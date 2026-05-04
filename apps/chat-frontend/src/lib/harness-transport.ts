@@ -88,7 +88,7 @@ interface ActiveSession {
  */
 export type HarnessPhase =
   | { kind: 'idle' }
-  | { kind: 'starting' }
+  | { kind: 'starting'; hint?: string }
   | { kind: 'connecting' }
   | { kind: 'warming' }
   | { kind: 'thinking' }
@@ -372,7 +372,10 @@ export class HarnessTransport<UI_MESSAGE extends UIMessage = UIMessage>
     // TODO(phase-1.1): switch to /api/session/start once the user has been
     // provisioned per-user by the controller via the active ComputeProvider.
     // For now /demo returns the shared sprite and is the only working path.
-    this.setPhase({ kind: 'starting' })
+    this.setPhase({
+      kind: 'starting',
+      hint: 'first sign-in provisions your environment (~3 min); later sessions resume in seconds',
+    })
     const res = await fetch(`${this.apiBase}/api/controller/api/session/start`, {
       method: 'POST',
       credentials: 'include',
@@ -702,6 +705,9 @@ function phasesEqual(a: HarnessPhase, b: HarnessPhase): boolean {
   if (a.kind !== b.kind) return false
   if (a.kind === 'running-tool' && b.kind === 'running-tool') {
     return a.tool === b.tool && a.hint === b.hint
+  }
+  if (a.kind === 'starting' && b.kind === 'starting') {
+    return a.hint === b.hint
   }
   return true
 }

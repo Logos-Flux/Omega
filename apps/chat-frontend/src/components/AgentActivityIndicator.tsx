@@ -65,5 +65,6 @@ function phaseTitle(phase: HarnessPhase): string {
 
 function phaseDetail(phase: HarnessPhase): string | null {
   if (phase.kind === 'running-tool' && phase.hint) return phase.hint
+  if (phase.kind === 'starting' && phase.hint) return phase.hint
   return null
 }
