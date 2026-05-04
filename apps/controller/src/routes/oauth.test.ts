@@ -458,6 +458,198 @@ describe('GET /api/oauth/google/status', () => {
   })
 })
 
+// ---------- GET /health (live mint check; gate's source of truth) ----------
+
+/**
+ * Mock for the /health route. Returns the encrypted refresh_token on
+ * SELECT refresh_token; returns a scopes/granted_at row on the post-mint
+ * re-read; succeeds on UPDATE/DELETE with rowCount 1; records every call.
+ */
+function buildHealthQueryMock(
+  refreshTokenCt: string | null,
+  calls: Array<{ sql: string; params: unknown[] }>,
+  scopes: string[] = ['openid', 'email'],
+) {
+  return async (sql: string, params?: unknown[]) => {
+    calls.push({ sql, params: params ?? [] })
+    if (/^\s*SELECT refresh_token/i.test(sql)) {
+      if (refreshTokenCt === null) return { rows: [], rowCount: 0 }
+      return { rows: [{ refresh_token: refreshTokenCt }], rowCount: 1 }
+    }
+    if (/^\s*SELECT user_id, provider, scopes, granted_at/i.test(sql)) {
+      return {
+        rows: [
+          {
+            user_id: '11111111-2222-3333-4444-555555555555',
+            provider: 'google',
+            scopes,
+            granted_at: '2026-04-30T12:00:00.000Z',
+            last_refreshed_at: '2026-05-04T12:00:00.000Z',
+          },
+        ],
+        rowCount: 1,
+      }
+    }
+    return { rows: [], rowCount: 1 }
+  }
+}
+
+describe('GET /api/oauth/google/health', () => {
+  test('no_grant when no row exists; no Google call', async () => {
+    mockPool.query.mockImplementation(async () => ({ rows: [], rowCount: 0 }))
+    let fetchCalled = false
+    globalThis.fetch = mock(async () => {
+      fetchCalled = true
+      return new Response('{}', { status: 200 })
+    }) as unknown as typeof fetch
+
+    const app = makeApp()
+    const res = await app.request('/api/oauth/google/health')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('cache-control')).toBe('no-store')
+    expect(await res.json()).toEqual({ ok: false, reason: 'no_grant' })
+    expect(fetchCalled).toBe(false)
+  })
+
+  test('revoked when Google rejects refresh token; row deleted', async () => {
+    const { encryptToken } = await import('../lib/crypto')
+    const ct = encryptToken('rt')
+    const calls: Array<{ sql: string; params: unknown[] }> = []
+    mockPool.query.mockImplementation(buildHealthQueryMock(ct, calls))
+
+    globalThis.fetch = mock(async () => {
+      return new Response('{"error":"invalid_grant"}', {
+        status: 400,
+        headers: { 'content-type': 'application/json' },
+      })
+    }) as unknown as typeof fetch
+
+    const app = makeApp()
+    const res = await app.request('/api/oauth/google/health')
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ ok: false, reason: 'revoked' })
+
+    const deleteCall = calls.find((c) => /^\s*DELETE FROM pi\.oauth_tokens/i.test(c.sql))
+    expect(deleteCall).toBeDefined()
+  })
+
+  test('transient when Google 5xx; row preserved', async () => {
+    const { encryptToken } = await import('../lib/crypto')
+    const ct = encryptToken('rt')
+    const calls: Array<{ sql: string; params: unknown[] }> = []
+    mockPool.query.mockImplementation(buildHealthQueryMock(ct, calls))
+
+    globalThis.fetch = mock(async () => {
+      return new Response('upstream down', { status: 503 })
+    }) as unknown as typeof fetch
+
+    const app = makeApp()
+    const res = await app.request('/api/oauth/google/health')
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ ok: false, reason: 'transient' })
+
+    const deleteCall = calls.find((c) => /^\s*DELETE FROM pi\.oauth_tokens/i.test(c.sql))
+    expect(deleteCall).toBeUndefined()
+  })
+
+  test('ok happy path: bumps last_refreshed_at, returns scopes + granted_at, no access_token leak', async () => {
+    const { encryptToken } = await import('../lib/crypto')
+    const ct = encryptToken('rt')
+    const calls: Array<{ sql: string; params: unknown[] }> = []
+    mockPool.query.mockImplementation(
+      buildHealthQueryMock(ct, calls, [
+        'https://www.googleapis.com/auth/drive.readonly',
+        'openid',
+        'email',
+      ]),
+    )
+
+    globalThis.fetch = mock(async () => {
+      return new Response(
+        JSON.stringify({
+          access_token: 'ya29.must-not-leak',
+          expires_in: 3599,
+          scope: 'https://www.googleapis.com/auth/drive.readonly openid email',
+          token_type: 'Bearer',
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      )
+    }) as unknown as typeof fetch
+
+    const app = makeApp()
+    const res = await app.request('/api/oauth/google/health')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('cache-control')).toBe('no-store')
+
+    const text = await res.text()
+    expect(text).not.toContain('ya29.must-not-leak')
+
+    const body = JSON.parse(text) as {
+      ok: boolean
+      scopes: string[]
+      granted_at: string | null
+    }
+    expect(body.ok).toBe(true)
+    expect(body.scopes).toContain('https://www.googleapis.com/auth/drive.readonly')
+    expect(body.granted_at).toBe('2026-04-30T12:00:00.000Z')
+
+    const updateCall = calls.find((c) => /^\s*UPDATE pi\.oauth_tokens/i.test(c.sql))
+    expect(updateCall).toBeDefined()
+    expect(updateCall!.sql).toContain('last_refreshed_at = NOW()')
+  })
+
+  test('decrypt_failed when ciphertext is unusable; no Google call, no DELETE', async () => {
+    const calls: Array<{ sql: string; params: unknown[] }> = []
+    mockPool.query.mockImplementation(buildHealthQueryMock('not-valid-ciphertext', calls))
+
+    let fetchCalled = false
+    globalThis.fetch = mock(async () => {
+      fetchCalled = true
+      return new Response('{}', { status: 200 })
+    }) as unknown as typeof fetch
+
+    const originalErr = console.error
+    console.error = () => {}
+    try {
+      const app = makeApp()
+      const res = await app.request('/api/oauth/google/health')
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ ok: false, reason: 'decrypt_failed' })
+      expect(fetchCalled).toBe(false)
+      const deleteCall = calls.find((c) => /^\s*DELETE FROM pi\.oauth_tokens/i.test(c.sql))
+      expect(deleteCall).toBeUndefined()
+    } finally {
+      console.error = originalErr
+    }
+  })
+
+  test('misconfigured (503) when GOOGLE_OAUTH_CLIENT_ID is missing; no Google call', async () => {
+    delete process.env.GOOGLE_OAUTH_CLIENT_ID
+    const { encryptToken } = await import('../lib/crypto')
+    const ct = encryptToken('rt')
+    const calls: Array<{ sql: string; params: unknown[] }> = []
+    mockPool.query.mockImplementation(buildHealthQueryMock(ct, calls))
+
+    let fetchCalled = false
+    globalThis.fetch = mock(async () => {
+      fetchCalled = true
+      return new Response('{}', { status: 200 })
+    }) as unknown as typeof fetch
+
+    const originalErr = console.error
+    console.error = () => {}
+    try {
+      const app = makeApp()
+      const res = await app.request('/api/oauth/google/health')
+      expect(res.status).toBe(503)
+      expect(await res.json()).toEqual({ ok: false, reason: 'misconfigured' })
+      expect(fetchCalled).toBe(false)
+    } finally {
+      console.error = originalErr
+    }
+  })
+})
+
 // ---------- POST /access-token (Phase 0.B.3) ----------
 
 const VALID_USER_ID = 'aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee'
