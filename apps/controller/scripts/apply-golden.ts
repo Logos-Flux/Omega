@@ -118,6 +118,16 @@ console.log('[apply] npm globals…')
   } catch {
     /* empty list, treat as none installed */
   }
+  // npm's actual install prefix (where -g binaries land). DO NOT derive from
+  // `command -v npm` — on Sprites that resolves to /.sprite/bin/npm, which
+  // is a wrapper bash script (not a symlink), so stripping `/npm` leaves
+  // /.sprite/bin and the symlink we'd create below would point back at
+  // itself ("/.sprite/bin/gccli -> /.sprite/bin/gccli"). `npm config get
+  // prefix` returns the underlying language root (e.g.
+  // /.sprite/languages/node/nvm/versions/node/v22.20.0), and <prefix>/bin
+  // is where the real binaries live.
+  const npmPrefix = mustShell(`${npm} config get prefix`, 'npm config get prefix').trim()
+
   for (const g of manifest.npm_globals) {
     const have = installed[g.name]?.version
     if (have === g.version) {
@@ -129,11 +139,10 @@ console.log('[apply] npm globals…')
     // Symlink each connector binary into /.sprite/bin so the harness's
     // exec PATH (which only lists /.sprite/bin + the FHS dirs) can find
     // it. Without this, `gccli` etc. resolve to "command not found" inside
-    // the harness even though npm installed them under
-    // /.sprite/languages/node/<v>/bin/. Idempotent (-sf overwrites).
-    const binSrc = `${npmPathRaw.replace(/\/npm$/, '')}/${g.binary}`
+    // the harness even though npm installed them under <npmPrefix>/bin/.
+    // Idempotent (-sf overwrites).
     mustShell(
-      `sudo ln -sf ${binSrc} /.sprite/bin/${g.binary}`,
+      `sudo ln -sf ${npmPrefix}/bin/${g.binary} /.sprite/bin/${g.binary}`,
       `symlink ${g.binary} → /.sprite/bin/`,
     )
   }
