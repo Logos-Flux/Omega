@@ -15,6 +15,8 @@ import { HarnessTransport } from './lib/harness-transport'
 import { HarnessSessionProvider } from './lib/harness-session'
 import { ThreadLockProvider, useThreadLock } from './lib/thread-lock'
 import { SettingsPage, isSettingsPath } from './components/SettingsPage'
+import { SpriteWarmupProvider } from './lib/sprite-warmup'
+import { SpriteWarmupBanner } from './components/SpriteWarmupBanner'
 
 const API_BASE = (import.meta.env.BASE_URL ?? '/').replace(/\/$/, '')
 
@@ -108,16 +110,26 @@ function AppShellRouter() {
   // when running with ENABLE_GOOGLE_OAUTH=true on the controller. The
   // `lib/google-oauth.tsx` hook + ConnectGoogleScreen components remain
   // available; just wire them back into this tree.
-  return settings ? (
-    <SettingsPage />
-  ) : (
-    <AgentModeProvider>
-      <ProviderSelectionProvider>
-        <ThreadLockProvider>
-          <ChatPage />
-        </ThreadLockProvider>
-      </ProviderSelectionProvider>
-    </AgentModeProvider>
+  //
+  // Sprite warmup fires immediately after auth resolves so the per-user
+  // sprite is provisioned (or unfrozen from checkpoint) in the background
+  // while the user is landing on the chat surface. Banner mounts inside
+  // the chat surface; AgentModeProvider reads the warmup state via context
+  // (via useSpriteWarmup) to mask agent mode while the sprite isn't ready.
+  return (
+    <SpriteWarmupProvider enabled={true} apiBase={API_BASE}>
+      {settings ? (
+        <SettingsPage />
+      ) : (
+        <AgentModeProvider>
+          <ProviderSelectionProvider>
+            <ThreadLockProvider>
+              <ChatPage />
+            </ThreadLockProvider>
+          </ProviderSelectionProvider>
+        </AgentModeProvider>
+      )}
+    </SpriteWarmupProvider>
   )
 }
 
@@ -351,6 +363,10 @@ function ChatPageInner({
         >
           <div className="flex h-full">
             <div className="flex min-w-0 flex-1 flex-col bg-t-deep">
+              {/* Sprite warmup signal — visible regardless of agent mode so
+                  users know the provisioning is running in the background
+                  and don't toggle agent on prematurely. */}
+              <SpriteWarmupBanner />
               {agentMode && <AgentModeBanner />}
               {agentMode && <AgentActivityIndicator />}
               <div className="min-h-0 flex-1">

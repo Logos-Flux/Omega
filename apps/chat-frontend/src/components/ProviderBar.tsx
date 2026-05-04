@@ -8,6 +8,7 @@ import { useAgentMode } from '../lib/agent-mode'
 import { useThreadLock } from '../lib/thread-lock'
 import { useThreadNav } from '../App'
 import { cn } from '../lib/cn'
+import { useSpriteWarmup } from '../lib/sprite-warmup'
 
 const ORDER: ProviderId[] = ['anthropic', 'google', 'perplexity']
 
@@ -99,6 +100,23 @@ function CacheSwitchIndicator({ onStartFresh }: { onStartFresh: () => void }) {
 
 function AgentModeToggle() {
   const { agentMode, toggleAgentMode } = useAgentMode()
+  // Disable the toggle until the sprite is ready. Without this, a user can
+  // flip Agent on during the ~3-min first-sign-in provision and stare at
+  // "Starting session" wondering if it's broken. The SpriteWarmupBanner is
+  // already telling them to wait; the disabled toggle reinforces it.
+  // If the user is already in agent mode (toggled before warmup state was
+  // wired), we don't disable — toggling off must always work.
+  const { state } = useSpriteWarmup()
+  const disabled = !agentMode && state.kind !== 'ready' && state.kind !== 'idle'
+  const baseTitle = agentMode
+    ? 'Agent Mode on — chat is backed by the Pi harness (skills, files, tools).'
+    : 'Agent Mode off — chat uses the lower-latency chat-api runtime.'
+  const title = disabled
+    ? state.kind === 'provisioning'
+      ? 'Preparing your agent environment — try again in a moment.'
+      : `Agent setup failed: ${state.kind === 'failed' ? state.reason : 'unknown'}`
+    : baseTitle
+
   return (
     <button
       type="button"
@@ -106,16 +124,16 @@ function AgentModeToggle() {
       role="switch"
       aria-checked={agentMode}
       aria-label="Agent Mode"
-      title={
-        agentMode
-          ? 'Agent Mode on — chat is backed by the Pi harness (skills, files, tools).'
-          : 'Agent Mode off — chat uses the lower-latency chat-api runtime.'
-      }
+      aria-disabled={disabled}
+      disabled={disabled}
+      title={title}
       className={cn(
         'group inline-flex items-center gap-2 rounded-md border px-2 py-1 transition-colors',
-        agentMode
-          ? 'border-t-accent-alt/40 bg-t-accent-alt/5 text-t-accent-alt hover:bg-t-accent-alt/10'
-          : 'border-t-border bg-t-surface text-t-muted hover:bg-t-hover',
+        disabled
+          ? 'cursor-not-allowed border-t-border bg-t-surface text-t-muted/50 opacity-60'
+          : agentMode
+            ? 'border-t-accent-alt/40 bg-t-accent-alt/5 text-t-accent-alt hover:bg-t-accent-alt/10'
+            : 'border-t-border bg-t-surface text-t-muted hover:bg-t-hover',
       )}
     >
       <span className="font-display text-[10px] uppercase tracking-[0.15em]">Agent</span>

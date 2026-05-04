@@ -5,11 +5,14 @@
 
 export const MAX_UPLOAD_BYTES = 1_000_000
 
-// Cold sprites take ~5–30s to warm up after a /start; harness restarts
-// during an update orchestrator run also briefly drop WS connections.
-// Exponential backoff covers both without exposing the user to red-error
-// UI on transient close-before-open events.
-export const WS_RETRY_DELAYS_MS = [3000, 8000, 20000]
+// First-ever provision (apt install of poppler/pandoc/weasyprint + npm
+// globals + harness boot + healthz) takes ~3–5 minutes on a brand-new
+// sprite. Subsequent unfreezes from checkpoint are seconds. Harness
+// restarts during an update-orchestrator run also briefly drop WS
+// connections. Sum of these delays must comfortably exceed the cold-
+// provision budget so a user toggling Agent Mode mid-warmup doesn't
+// see a red error before bootstrap finishes; total budget here ≈ 6m.
+export const WS_RETRY_DELAYS_MS = [3000, 5000, 10000, 30000, 45000, 60000, 60000, 60000, 60000]
 
 export interface SessionStartResponse {
   sessionId: string
