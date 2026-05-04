@@ -27,9 +27,8 @@
 // `RUN curl … sprite` install in the Dockerfile (or vendoring the
 // binary), tracked alongside Phase 0.A.1 cutover.
 
-import { spawnSync, type SpawnSyncReturns } from 'node:child_process'
-import { dirname, isAbsolute, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { spawn } from 'node:child_process'
+import { isAbsolute, join } from 'node:path'
 
 export interface GoldenRef {
   version: string
@@ -54,6 +53,14 @@ export interface BootstrapOptions {
   repoRoot?: string
   /** Provider-supplied env vars for the harness. Tests inject a stub. */
   resolveHarnessEnv?: HarnessEnvResolver
+  /** Max wait for the harness-start listening banner before giving up. Defaults to 90000. */
+  harnessStartTimeoutMs?: number
+}
+
+export interface SpawnResult {
+  status: number | null
+  stdout: string
+  stderr: string
 }
 
 export type ApplyGoldenRunner = (args: {
@@ -61,9 +68,9 @@ export type ApplyGoldenRunner = (args: {
   version: string
   manifestPath: string
   repoRoot: string
-}) => SpawnSyncReturns<string>
+}) => Promise<SpawnResult>
 
-export type SpriteCliRunner = (args: string[]) => SpawnSyncReturns<string>
+export type SpriteCliRunner = (args: string[]) => Promise<SpawnResult>
 export type HealthzFetcher = (url: string) => Promise<{ ok: boolean; status: number; body: string }>
 export type SpriteUrlFetcher = (spriteName: string) => Promise<string>
 export type HarnessEnvResolver = () => Record<string, string>
@@ -78,11 +85,13 @@ class BootstrapError extends Error {
   }
 }
 
-const DEFAULT_REPO_ROOT = (() => {
-  const here = dirname(fileURLToPath(import.meta.url))
-  // src/lib/bootstrap.ts → controller/
-  return join(here, '..', '..')
-})()
+// Use the process cwd as repo root. In dev (`bun run dev`) cwd is the
+// controller repo root; in the Docker runner WORKDIR is `/app`. The earlier
+// `import.meta.url + '../..'` worked from src/lib/ in dev but bundled to
+// /app/dist/index.js in production, so the two `..`s overshot to `/` —
+// every fresh-sprite request crashed with `Module not found
+// "/scripts/apply-golden.ts"`. cwd is bundle-agnostic.
+const DEFAULT_REPO_ROOT = process.cwd()
 
 function resolveManifestPath(manifestUri: string, repoRoot: string): string {
   if (manifestUri.startsWith('file://')) {
@@ -92,15 +101,45 @@ function resolveManifestPath(manifestUri: string, repoRoot: string): string {
   throw new BootstrapError('resolve-manifest', `unsupported manifest_uri scheme: ${manifestUri}`)
 }
 
+// Run a subprocess to completion without blocking the Bun event loop. The
+// previous spawnSync versions blocked /healthz responses for the duration
+// of apply-golden (~2.5min for first-ever apt install), causing Fly's
+// 15s/5s healthcheck to fail repeatedly until Fly restarted the machine
+// mid-bootstrap — leaving an orphan sprite with no harness running.
+function spawnAsync(
+  cmd: string,
+  args: string[],
+  opts: { cwd?: string; inherit?: boolean } = {},
+): Promise<SpawnResult> {
+  return new Promise((resolve) => {
+    const proc = spawn(cmd, args, {
+      cwd: opts.cwd,
+      stdio: opts.inherit ? ['ignore', 'inherit', 'inherit'] : ['ignore', 'pipe', 'pipe'],
+    })
+    let stdout = ''
+    let stderr = ''
+    proc.stdout?.on('data', (c: Buffer) => {
+      stdout += c.toString('utf8')
+    })
+    proc.stderr?.on('data', (c: Buffer) => {
+      stderr += c.toString('utf8')
+    })
+    proc.once('exit', (code) => resolve({ status: code, stdout, stderr }))
+    proc.once('error', (err) => resolve({ status: -1, stdout, stderr: stderr + String(err) }))
+  })
+}
+
 const defaultApplyGolden: ApplyGoldenRunner = ({ spriteName, version, manifestPath, repoRoot }) =>
-  spawnSync(
+  // inherit: stdout/stderr stream straight to the controller's stdout
+  // (and thus fly logs), preserving the visible `[apply] apt packages…`
+  // progress trace operators rely on for diagnosing slow bootstraps.
+  spawnAsync(
     'bun',
     [join(repoRoot, 'scripts', 'apply-golden.ts'), spriteName, version, manifestPath],
-    { stdio: 'inherit', cwd: repoRoot, encoding: 'utf8' },
+    { cwd: repoRoot, inherit: true },
   )
 
-const defaultSpriteCli: SpriteCliRunner = (args) =>
-  spawnSync('sprite', args, { encoding: 'utf8' })
+const defaultSpriteCli: SpriteCliRunner = (args) => spawnAsync('sprite', args)
 
 const defaultFetchHealthz: HealthzFetcher = async (url) => {
   const res = await fetch(url)
@@ -128,11 +167,23 @@ const defaultResolveHarnessEnv: HarnessEnvResolver = () => {
     WORKSPACE_ROOT: '/workspace',
     PORT: '8080',
   }
+  // Provider keys + JWT signer come from the controller's own env.
+  // CONTROLLER_BASE_URL + CONTROLLER_SERVICE_TOKEN + the GOOGLE_OAUTH_*
+  // pair are the gccli/gdcli/gmcli boot shim's required vars (per
+  // pi-harness/CLAUDE.md "gccli/gdcli/gmcli boot shim"). Without all four
+  // the shim disables itself and the harness boots without populating
+  // ~/.gccli/accounts.json — gccli skills then prompt the model to run
+  // `gccli accounts add` manually, which is the regression we just spent
+  // a session fixing for the shared spike sprite. Pass them through.
   for (const k of [
     'ANTHROPIC_API_KEY',
     'GOOGLE_API_KEY',
     'PERPLEXITY_API_KEY',
     'HARNESS_JWT_SECRET',
+    'CONTROLLER_BASE_URL',
+    'CONTROLLER_SERVICE_TOKEN',
+    'GOOGLE_OAUTH_CLIENT_ID',
+    'GOOGLE_OAUTH_CLIENT_SECRET',
   ]) {
     const v = process.env[k]
     if (v) env[k] = v
@@ -144,6 +195,99 @@ function envToFlag(env: Record<string, string>): string {
   return Object.entries(env)
     .map(([k, v]) => `${k}=${v}`)
     .join(',')
+}
+
+const HARNESS_LISTENING_PATTERN = /\[harness\] listening on/
+
+/**
+ * Spawn `sprite exec --tty bun /home/sprite/pi-harness.js` and wait until
+ * the harness logs its listening banner. The local sprite CLI process is
+ * SIGINT'd on success; the remote TTY session keeps the harness alive.
+ *
+ * Failure modes:
+ * - sprite CLI exits with status 0 before banner: harness died during init
+ *   (env error, port collision, etc.) — surface stdout/stderr tail.
+ * - sprite CLI exits with non-zero status before banner: CLI itself errored
+ *   (auth, sprite missing, etc.) — surface tail.
+ * - timeout: kill local, throw with last output. The remote session may
+ *   actually be running fine; the next bootstrap step's healthz poll is
+ *   the source of truth.
+ */
+async function spawnHarnessAndWaitForListening(args: {
+  spriteName: string
+  env: string
+  timeoutMs: number
+}): Promise<void> {
+  const proc = spawn(
+    'sprite',
+    [
+      'exec',
+      '-s',
+      args.spriteName,
+      '--env',
+      args.env,
+      '--tty',
+      'bun',
+      '/home/sprite/pi-harness.js',
+    ],
+    { stdio: ['ignore', 'pipe', 'pipe'] },
+  )
+
+  let buffer = ''
+  let resolved = false
+
+  const consume = (chunk: Buffer): void => {
+    buffer += chunk.toString('utf8')
+    if (buffer.length > 8192) buffer = buffer.slice(-4096) // keep tail
+  }
+  proc.stdout?.on('data', consume)
+  proc.stderr?.on('data', consume)
+
+  await new Promise<void>((resolve, reject) => {
+    const finish = (err?: Error): void => {
+      if (resolved) return
+      resolved = true
+      clearInterval(banner)
+      clearTimeout(timer)
+      // Detach the local sprite CLI; remote TTY keeps the harness running.
+      try {
+        proc.kill('SIGINT')
+      } catch {
+        // process already exited
+      }
+      err ? reject(err) : resolve()
+    }
+
+    const banner = setInterval(() => {
+      if (HARNESS_LISTENING_PATTERN.test(buffer)) finish()
+    }, 200)
+
+    proc.once('exit', (code) => {
+      if (resolved) return
+      const tail = buffer.slice(-500).trim()
+      if (code === 0) {
+        finish(new BootstrapError('harness-start', `harness exited cleanly during boot: ${tail}`))
+      } else {
+        finish(
+          new BootstrapError(
+            'harness-start',
+            `sprite exec exited with code ${code} before listening banner: ${tail}`,
+          ),
+        )
+      }
+    })
+
+    const timer = setTimeout(() => {
+      if (resolved) return
+      const tail = buffer.slice(-500).trim()
+      finish(
+        new BootstrapError(
+          'harness-start',
+          `did not see listening banner within ${args.timeoutMs}ms: ${tail}`,
+        ),
+      )
+    }, args.timeoutMs)
+  })
 }
 
 /**
@@ -169,7 +313,7 @@ export async function bootstrapSprite(spriteName: string, opts: BootstrapOptions
   // This subprocess is the same path operators use; idempotent.
   console.log(`[bootstrap] ${spriteName}: applying golden ${opts.golden.version}…`)
   {
-    const r = runApplyGolden({
+    const r = await runApplyGolden({
       spriteName,
       version: opts.golden.version,
       manifestPath,
@@ -184,7 +328,7 @@ export async function bootstrapSprite(spriteName: string, opts: BootstrapOptions
   // bootstrap won't find one; re-runs (after partial failures) will.
   console.log(`[bootstrap] ${spriteName}: (re)starting harness…`)
   {
-    const list = spriteCli(['sessions', 'list', '-s', spriteName])
+    const list = await spriteCli(['sessions', 'list', '-s', spriteName])
     if (list.status !== 0) {
       throw new BootstrapError(
         'sessions-list',
@@ -194,7 +338,7 @@ export async function bootstrapSprite(spriteName: string, opts: BootstrapOptions
     for (const line of (list.stdout ?? '').split('\n')) {
       const m = /^(\d+)\s+bun\s+\/home\/sprite\/pi-h/.exec(line)
       if (m) {
-        const kill = spriteCli(['sessions', 'kill', '-s', spriteName, m[1]!])
+        const kill = await spriteCli(['sessions', 'kill', '-s', spriteName, m[1]!])
         if (kill.status !== 0) {
           // Non-fatal — log and continue. The new exec will surface a
           // real failure if the kill actually mattered.
@@ -206,32 +350,25 @@ export async function bootstrapSprite(spriteName: string, opts: BootstrapOptions
     }
 
     const env = envToFlag(resolveHarnessEnv())
-    // We expect this to time out — the harness keeps running in a
-    // detached TTY. status 0 means harness exited immediately, which is
-    // a startup-error signal.
-    const start = spriteCli([
-      'exec',
-      '-s',
+    // `sprite exec --tty` keeps the *remote* TTY session alive after the
+    // local CLI process disconnects (per Sprites docs). The intended
+    // operator workflow is interactive — run the command, see the
+    // listening banner, Ctrl-C the local terminal — but spawnSync has no
+    // such Ctrl-C; it blocks forever waiting for the local sprite CLI
+    // to exit, hanging the entire bootstrap. Spawn async, watch stdout
+    // for the listening banner, then SIGINT the local CLI to detach.
+    await spawnHarnessAndWaitForListening({
       spriteName,
-      '--env',
       env,
-      '--tty',
-      'bun',
-      '/home/sprite/pi-harness.js',
-    ])
-    if (start.status === 0) {
-      throw new BootstrapError(
-        'harness-start',
-        `harness exited cleanly during boot — likely env or startup error: ${start.stderr ?? start.stdout ?? ''}`,
-      )
-    }
+      timeoutMs: opts.harnessStartTimeoutMs ?? 90_000,
+    })
   }
 
   // Step 3: flip URL to auth=public so the browser can reach it. The
   // harness's JWT verification is the actual auth boundary. Idempotent.
   console.log(`[bootstrap] ${spriteName}: flipping URL to auth=public…`)
   {
-    const r = spriteCli(['url', 'update', '--auth', 'public', '-s', spriteName])
+    const r = await spriteCli(['url', 'update', '--auth', 'public', '-s', spriteName])
     if (r.status !== 0) {
       throw new BootstrapError('url-auth', `exit ${r.status}: ${r.stderr ?? ''}`)
     }
