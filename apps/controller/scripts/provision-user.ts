@@ -134,6 +134,18 @@ console.log(`[provision] (re)starting harness…`)
     }
   }
 
+  // CONTROLLER_BASE_URL + CONTROLLER_SERVICE_TOKEN + the GOOGLE_OAUTH_*
+  // pair are the gccli/gdcli/gmcli boot shim's required vars (see
+  // pi-harness "gccli/gdcli/gmcli boot shim" docs). Without all four the
+  // shim disables itself at harness boot and the gccli skill prompts the
+  // user to run `accounts add` manually — even though the controller's
+  // /api/oauth/google/access-token would mint cleanly.
+  //
+  // NOTE: the pass-cli titles below are operator-specific (52L's vault
+  // layout). For non-52L deployments, replace these passField() calls
+  // with reads from your own secret manager or env vars. A future
+  // refactor should genericize via env-var fallback (e.g. honor
+  // ANTHROPIC_API_KEY etc. from the operator's shell when set).
   const env = [
     `ANTHROPIC_API_KEY=${passField('Claude API', 'API Key')}`,
     `GOOGLE_API_KEY=${passField('Gemini API', 'API Key')}`,
@@ -141,6 +153,10 @@ console.log(`[provision] (re)starting harness…`)
     `HARNESS_JWT_SECRET=${passField('52L HARNESS_JWT_SECRET', 'password')}`,
     'WORKSPACE_ROOT=/workspace',
     'PORT=8080',
+    `CONTROLLER_BASE_URL=${controllerUrl()}`,
+    `CONTROLLER_SERVICE_TOKEN=${passField('52L Controller — service token (claude-code)', 'password')}`,
+    `GOOGLE_OAUTH_CLIENT_ID=${passField('52L Google OAuth — pi connectors', 'client_id')}`,
+    `GOOGLE_OAUTH_CLIENT_SECRET=${passField('52L Google OAuth — pi connectors', 'client_secret')}`,
   ].join(',')
 
   const start = spawnSync(
@@ -168,32 +184,48 @@ console.log(`[provision] flipping URL to auth=public…`)
 }
 
 // 7. Verify
+let spriteUrl = ''
 console.log(`[provision] verifying healthz…`)
 {
   // Refresh the sprite record so we have the post-flip URL.
   const r = await spritesApi(`/sprites/${encodeURIComponent(spriteName)}`)
   if (!r.ok) die(`fetch sprite post-flip failed: ${r.status}`)
   const fresh = (await r.json()) as SpriteRecord
+  spriteUrl = fresh.url
   // Give the harness a beat to come up.
   await new Promise((res) => setTimeout(res, 4000))
-  const hz = await fetch(`${fresh.url}/healthz`)
+  const hz = await fetch(`${spriteUrl}/healthz`)
   const body = await hz.text()
   if (!hz.ok) die(`healthz failed: ${hz.status} ${body}`)
-  console.log(`  ${fresh.url}/healthz → ${body.trim()}`)
+  console.log(`  ${spriteUrl}/healthz → ${body.trim()}`)
+}
+
+// 8. Stamp pi.containers via the admin endpoint so the user's first
+//    /api/session/start hits the existing-row fast path instead of
+//    triggering auto-provision (which would race the operator and is
+//    being kept off in pre-provisioned-only deployments). Idempotent
+//    via the admin endpoint's ON CONFLICT DO UPDATE.
+console.log(`[provision] stamping pi.containers row…`)
+{
+  await adminCall(`/api/admin/users/${user.id}/container`, {
+    method: 'POST',
+    body: {
+      provider: 'sprites',
+      container_name: spriteName,
+      http_url: spriteUrl,
+      base_image_version: golden.version,
+    },
+  })
+  console.log(`  row stamped: provider=sprites name=${spriteName} version=${golden.version}`)
 }
 
 console.log()
 console.log(`[provision] done.`)
 console.log(`  user        ${user.email} (${user.release_channel})`)
 console.log(`  sprite      ${spriteName}`)
+console.log(`  url         ${spriteUrl}`)
 console.log(`  golden      ${golden.version}`)
 console.log()
-console.log(`Next: have the user POST /api/session/start (or just hit the`)
-console.log(`chat page once the frontend is flipped to /start) — the controller`)
-console.log(`will see the existing sprite and stamp pi.containers automatically.`)
-console.log(`Optional follow-up: bun scripts/seed-connectors.ts ${user.email}`)
-console.log(`once that script lands (TODO step 7.6) to wire Calendar/Drive/Gmail.`)
-
-// Ensure controllerUrl is referenced — the `lib` import is noisy without
-// using both helpers. (kept for parity with other scripts.)
-void controllerUrl
+console.log(`Next: have the user reload the chat surface — the controller's`)
+console.log(`/api/session/start will see the existing row + sprite and return`)
+console.log(`the URL+token immediately (existing-row fast path).`)
