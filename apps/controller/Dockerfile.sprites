@@ -1,0 +1,62 @@
+# Controller image with the Sprites CLI baked in. Use this Dockerfile when
+# you set COMPUTE_PROVIDER=sprites. The base Dockerfile in this directory
+# defaults to the Docker provider and intentionally omits the Sprites CLI
+# layer (see comments there).
+#
+# Build:
+#   docker build -f Dockerfile.sprites -t omega-controller-sprites .
+#
+# Required runtime env (in addition to the base controller envs):
+#   SPRITES_API_TOKEN=<org-slug/org-id/token-id/token-value>
+#
+# The entrypoint runs `sprite auth setup --token "$SPRITES_API_TOKEN"` at
+# boot so every later subprocess (sessions list/kill, exec, url update,
+# the apply-golden script's `sprite exec`s) inherits a valid org binding.
+# Without that step every /api/session/start fails mid-bootstrap with
+# "Error: no organizations configured. Run 'sprite login' to authenticate."
+
+FROM oven/bun:1 AS base
+WORKDIR /app
+
+FROM base AS deps
+COPY package.json bun.lock* ./
+RUN bun install --frozen-lockfile
+
+FROM base AS builder
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+RUN bun run build
+
+FROM base AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+
+# Install the Sprites CLI. The official quick-install script detects arch +
+# verifies SHA256; we point it at /usr/local/bin so the binary lands on the
+# default PATH instead of root's ~/.local/bin. `sprite --version` afterwards
+# is a build-time canary: any failure upstream (404 on the script, checksum
+# mismatch, missing arch binary) makes the image build fail loudly instead
+# of in production.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends curl ca-certificates \
+  && rm -rf /var/lib/apt/lists/* \
+  && curl -fsSL https://sprites.dev/install.sh | SPRITE_INSTALL_BIN_DIR=/usr/local/bin sh \
+  && sprite --version
+
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/package.json ./
+COPY --from=builder /app/migrations ./migrations
+# bootstrap.ts shells out to `bun scripts/apply-golden.ts` for the
+# fresh-sprite install; without this COPY every /api/session/start
+# crashes with `Module not found "/app/scripts/apply-golden.ts"`.
+COPY --from=builder /app/scripts ./scripts
+# Auth the sprite CLI from SPRITES_API_TOKEN at boot. See header for
+# the failure mode when this is skipped.
+COPY --from=builder /app/docker-entrypoint.sh /usr/local/bin/controller-entrypoint.sh
+RUN chmod +x /usr/local/bin/controller-entrypoint.sh
+
+EXPOSE 3000
+
+ENTRYPOINT ["/usr/local/bin/controller-entrypoint.sh"]
+CMD ["bun", "run", "start"]
