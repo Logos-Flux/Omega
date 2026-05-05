@@ -2,10 +2,11 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import { useSpriteWarmup } from './sprite-warmup'
 
 // Agent Mode = the harness-backed runtime (Pi-harness inside a Sprite).
-// Toggle OFF (default) routes through chat-api; ON constructs the harness
-// transport which lazily provisions a per-user sprite on first send. We
-// default OFF so a fresh sign-in doesn't pay the cold-start sprite cost
-// before the user has decided they need agent capabilities. Persisted in
+// Toggle ON (default) routes through the harness transport; OFF falls back
+// to chat-api. Default is ON because operators pre-provision per-user
+// sprites before the user signs in (scripts/provision-user.ts) — the
+// warmup hits the existing-row fast path on every sign-in, so there's no
+// cold-start cost to landing in agent mode on first paint. Persisted in
 // localStorage so a user's pick survives reloads.
 //
 // Effective agentMode is masked to false whenever the sprite warmup state
@@ -14,10 +15,12 @@ import { useSpriteWarmup } from './sprite-warmup'
 // constructed against an unprovisioned sprite — every message they send
 // would silently fail (WS to a dead URL or /start hanging on bootstrap).
 // The persisted preference is preserved; the moment warmup flips ready,
-// agent mode comes back on automatically.
+// agent mode comes back on automatically. So even with the default flipped
+// to ON, an unprovisioned user (or one mid-bootstrap) can still chat via
+// chat-api while the sprite is being prepared.
 
 const STORAGE_KEY = 'omega.chat.agentMode'
-const DEFAULT_AGENT_MODE = false
+const DEFAULT_AGENT_MODE = true
 
 interface AgentModeContextValue {
   agentMode: boolean
