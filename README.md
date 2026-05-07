@@ -16,6 +16,8 @@
 Open-source agent chat stack: streaming chat API, assistant-ui frontend, sandbox
 compute orchestrator, **pi-harness** agent runtime, and a RAG service. Apache-2.0.
 
+> **Status:** Apache-2.0, single-maintainer. PRs welcome; support is best-effort.
+
 ```
 ┌──────────────┐  /api/*           ┌──────────────┐
 │ chat-frontend│ ───────────────▶  │  chat-api    │  HTTP streaming chat (AI SDK v5)
@@ -158,7 +160,7 @@ by env (`COMPUTE_PROVIDER`) so adding a new one doesn't touch any routes.
 - **Google OAuth** (Drive + Calendar + Gmail per user) is opt-in: set
   `ENABLE_GOOGLE_OAUTH=true` on the controller and configure
   `GOOGLE_OAUTH_CLIENT_ID/SECRET`. Disabled by default.
-- **MCP server** — the original 52L deploy used the Cloudflare-specific
+- **MCP server** — the original closed-source deploy used the Cloudflare-specific
   `agents/mcp` adapter. Porting to the Node MCP SDK is on the roadmap.
 - **OAuth-mediated RAG ingest** — `apps/rag-api/ingest/` runs per-user
   Drive crawls. Requires either a static refresh token (`OAUTH_PROVIDER=env`)

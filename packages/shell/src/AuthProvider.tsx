@@ -5,7 +5,7 @@ import { createContext, useContext, type ReactNode } from 'react'
  *
  * Operators add their own auth at the reverse-proxy layer (oauth2-proxy,
  * Caddy basic auth, Tailscale serve, etc.) — the SPA doesn't enforce auth
- * itself. The original 52L deployment used this provider to verify a
+ * itself. The original closed-source deployment used this provider to verify a
  * Cloudflare Access JWT and gate the chat surface; the OSS replacement
  * always returns `status: 'authenticated'` so the gate is open.
  *

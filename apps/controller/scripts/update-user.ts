@@ -43,10 +43,25 @@ function resolveManifest(uri: string, repoRoot: string): string {
 const here = dirname(fileURLToPath(import.meta.url))
 const repoRoot = join(here, '..')
 
+// Operator config — set in your shell or via a sourced .env.operator file.
+// See provision-user.ts for the full list of supported PASS_ITEM_* overrides.
+const VAULT = process.env.PASS_VAULT_NAME
+if (!VAULT) die('PASS_VAULT_NAME env var is required (your pass-cli vault name).')
+
+const ITEM_HARNESS_JWT_SECRET = process.env.PASS_ITEM_HARNESS_JWT_SECRET ?? 'HARNESS_JWT_SECRET'
+const ITEM_ANTHROPIC          = process.env.PASS_ITEM_ANTHROPIC          ?? 'Claude API'
+const ITEM_GOOGLE_AI          = process.env.PASS_ITEM_GOOGLE_AI          ?? 'Gemini API'
+const ITEM_PERPLEXITY         = process.env.PASS_ITEM_PERPLEXITY         ?? 'Perplexity API'
+
 function passField(title: string, field: string): string {
-  const r = spawnSync('pass-cli', ['item', 'view', '--vault-name', '52L', '--item-title', title, '--field', field], { encoding: 'utf8' })
+  const r = spawnSync('pass-cli', ['item', 'view', '--vault-name', VAULT!, '--item-title', title, '--field', field], { encoding: 'utf8' })
   if (r.status !== 0) die(`pass-cli failed: ${title} / ${field}`)
   return r.stdout.replace(/\n$/, '')
+}
+
+// Prefer env vars where they're conventionally set; fall through to pass-cli.
+function envOrPass(envVar: string, title: string, field: string): string {
+  return process.env[envVar] ?? passField(title, field)
 }
 
 const [email] = process.argv.slice(2)
@@ -118,10 +133,10 @@ console.log(`[update] restarting harness…`)
     if (m) spawnSync('sprite', ['sessions', 'kill', '-s', container.container_name, m[1]!], { stdio: 'inherit' })
   }
   const env = [
-    `ANTHROPIC_API_KEY=${passField('Claude API', 'API Key')}`,
-    `GOOGLE_API_KEY=${passField('Gemini API', 'API Key')}`,
-    `PERPLEXITY_API_KEY=${passField('Perplexity API', 'API Key')}`,
-    `HARNESS_JWT_SECRET=${passField('52L HARNESS_JWT_SECRET', 'password')}`,
+    `ANTHROPIC_API_KEY=${envOrPass('ANTHROPIC_API_KEY', ITEM_ANTHROPIC, 'API Key')}`,
+    `GOOGLE_API_KEY=${envOrPass('GOOGLE_API_KEY', ITEM_GOOGLE_AI, 'API Key')}`,
+    `PERPLEXITY_API_KEY=${envOrPass('PERPLEXITY_API_KEY', ITEM_PERPLEXITY, 'API Key')}`,
+    `HARNESS_JWT_SECRET=${envOrPass('HARNESS_JWT_SECRET', ITEM_HARNESS_JWT_SECRET, 'password')}`,
     'WORKSPACE_ROOT=/workspace',
     'PORT=8080',
   ].join(',')
