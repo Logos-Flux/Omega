@@ -5,6 +5,7 @@
 import { google } from 'googleapis'
 
 const FOLDER_MIME = 'application/vnd.google-apps.folder'
+const NATIVE_PREFIX = 'application/vnd.google-apps.'
 
 export interface DriveFile {
   id: string
@@ -28,9 +29,10 @@ function driveClient(accessToken: string) {
 // scope ("only this company's shared drive") and as a per-tenant
 // content allowlist. Empty/undefined → whole-drive walk.
 //
-// Skips Google-native folders themselves (we don't ingest folders).
-// Native Docs/Sheets/Slides are kept — exporter handles them in
-// downloadFile.
+// Skips folders (we don't ingest them directly — walkFolder recurses)
+// and any Google-native type we don't have an exporter for. Native
+// Docs/Sheets/Slides pass through; downloadFile exports them. See
+// `isIngestable` below for the exact filter.
 export async function listAllUserFiles(
   accessToken: string,
   folderAllowlist?: string[],
@@ -108,16 +110,16 @@ type DriveApiFile = {
 }
 
 function pushIfFile(f: DriveApiFile, out: DriveFile[]): void {
-  if (f.id && f.name && f.mimeType && f.modifiedTime && f.mimeType !== FOLDER_MIME) {
-    out.push({
-      id: f.id,
-      name: f.name,
-      mimeType: f.mimeType,
-      modifiedTime: f.modifiedTime,
-      size: f.size ?? undefined,
-      parents: f.parents ?? undefined,
-    })
-  }
+  if (!(f.id && f.name && f.mimeType && f.modifiedTime)) return
+  if (!isIngestable(f.mimeType)) return
+  out.push({
+    id: f.id,
+    name: f.name,
+    mimeType: f.mimeType,
+    modifiedTime: f.modifiedTime,
+    size: f.size ?? undefined,
+    parents: f.parents ?? undefined,
+  })
 }
 
 const NATIVE_EXPORTS: Record<string, { mimeType: string; extension: string }> = {
@@ -133,6 +135,21 @@ const NATIVE_EXPORTS: Record<string, { mimeType: string; extension: string }> = 
     mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
     extension: '.pptx',
   },
+}
+
+// True for files we can actually feed into the pipeline. Folders are out
+// (we don't ingest them directly — walkFolder recurses into them). Google
+// native types are in only if we have an exporter for them; Drawings,
+// Forms, Scripts, Shortcuts, Sites, etc. are silently skipped because
+// trying to download them via files.get(alt:'media') fails with "Only
+// files with binary content can be downloaded" and previously killed the
+// whole crawl. Ordinary binary mimetypes always pass.
+export function isIngestable(mimeType: string): boolean {
+  if (mimeType === FOLDER_MIME) return false
+  if (mimeType.startsWith(NATIVE_PREFIX)) {
+    return Object.prototype.hasOwnProperty.call(NATIVE_EXPORTS, mimeType)
+  }
+  return true
 }
 
 export interface DownloadResult {

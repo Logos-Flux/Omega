@@ -54,14 +54,29 @@ export async function crawlForUser(jobId: string, userId: string): Promise<{ fil
   const files = await listAllUserFiles(accessToken, allowlist.length > 0 ? allowlist : undefined)
 
   let filesChanged = 0
+  let filesFailed = 0
   const seenFileIds: string[] = []
   const newDocIds: string[] = []
 
   for (const file of files) {
+    // Per-file failures (transient Drive 5xx, RAGFlow upload rejection,
+    // export size limit, etc.) are isolated — log and continue. Killing
+    // the whole crawl on one bad file used to be the dominant failure
+    // mode (issue #4). The user_file_access INSERT below is a no-op when
+    // the rag.files row doesn't exist yet, so a never-ingested file just
+    // stays uncatalogued without blocking the rest of the run.
     seenFileIds.push(file.id)
-    const result = await ingestOne(user.tenant_id, dataset.id, dataset.ragflow_dataset_id, accessToken, file)
-    if (result.changed) filesChanged++
-    if (result.newDocId) newDocIds.push(result.newDocId)
+    try {
+      const result = await ingestOne(user.tenant_id, dataset.id, dataset.ragflow_dataset_id, accessToken, file)
+      if (result.changed) filesChanged++
+      if (result.newDocId) newDocIds.push(result.newDocId)
+    } catch (err) {
+      filesFailed++
+      console.warn(
+        `[crawler] ingest failed for ${file.id} (${file.mimeType}) "${file.name}":`,
+        (err as Error).message,
+      )
+    }
 
     await pool.query(
       `INSERT INTO rag.user_file_access (user_id, file_id, last_checked_at)
@@ -70,6 +85,9 @@ export async function crawlForUser(jobId: string, userId: string): Promise<{ fil
        ON CONFLICT (user_id, file_id) DO UPDATE SET last_checked_at = NOW()`,
       [user.id, user.tenant_id, file.id],
     )
+  }
+  if (filesFailed > 0) {
+    console.warn(`[crawler] ${filesFailed}/${files.length} files failed for user ${user.chat_user_id}`)
   }
 
   // Drop access rows for files this user no longer sees.
