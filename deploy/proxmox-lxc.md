@@ -16,7 +16,9 @@ vars (`DATABASE_URL`, `CHAT_API_UPSTREAM`, etc.), not networking magic.
 
 ## 1. Create the container
 
-From the Proxmox host:
+From the Proxmox host. Pick the network shape that matches your host:
+
+### Option A — home / LAN host (DHCP on the public bridge)
 
 ```bash
 pct create 220 local:vztmpl/debian-12-standard_12.7-1_amd64.tar.zst \
@@ -29,7 +31,50 @@ pct create 220 local:vztmpl/debian-12-standard_12.7-1_amd64.tar.zst \
   --start 1
 ```
 
-`nesting=1 + keyctl=1` are required so Docker can run inside the LXC.
+This works when `vmbr0` is bridged to your LAN and there's a DHCP server
+on it (a typical home setup, or a Proxmox in a colo with a managed
+subnet).
+
+### Option B — cloud / NAT-bridge host (Hetzner-style)
+
+On hosts that bridge `vmbr0` directly to a single public IP (Hetzner,
+OVH dedicated, etc.), there is no DHCP and only one usable address on
+that bridge. Most Proxmox templates configure a second NAT'd bridge for
+container-to-internet traffic — typically `vmbr1` on `10.10.10.0/24` —
+with a `MASQUERADE` rule to vmbr0. Put the LXC there with a static IP:
+
+```bash
+pct create 220 local:vztmpl/debian-12-standard_12.7-1_amd64.tar.zst \
+  --hostname omega \
+  --memory 4096 \
+  --cores 2 \
+  --rootfs local-lvm:20 \
+  --net0 name=eth0,bridge=vmbr1,gw=10.10.10.1,ip=10.10.10.220/24,type=veth \
+  --features nesting=1,keyctl=1 \
+  --start 1
+```
+
+Quick check that the NAT bridge is set up — your `/etc/network/interfaces`
+on the host should have a stanza like:
+
+```
+auto vmbr1
+iface vmbr1 inet static
+    address 10.10.10.1/24
+    bridge-ports none
+    bridge-stp off
+    bridge-fd 0
+    post-up iptables -t nat -A POSTROUTING -s 10.10.10.0/24 -o vmbr0 -j MASQUERADE
+```
+
+If that's missing, the LXC will come up with no route. To expose Omega
+publicly on this kind of host, terminate TLS in a sibling LXC (or on the
+host) that has the public IP, and reverse-proxy to `10.10.10.220:8080`.
+
+---
+
+`nesting=1 + keyctl=1` are required for either option so Docker can run
+inside the LXC.
 
 ## 2. Install Docker + clone
 
