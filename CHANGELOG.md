@@ -28,6 +28,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - README "Status" line declaring the maintenance posture.
 - `apps/controller/scripts/README.md` documenting the env surface.
 
+### Fixed
+
+- `chat-frontend`: `POST /api/session/start` now retries on `409 Conflict`
+  with exponential backoff (1.5s, 4s) when two browser tabs / signins race
+  the controller's per-user provisioning. Previously the second caller
+  surfaced the 409 to the user as a session-start failure.
+
 ## [0.1.0] - 2026-05-03
 
 Initial public alpha release. Tagged as [`v0.1.0`](https://github.com/Logos-Flux/Omega/releases/tag/v0.1.0).

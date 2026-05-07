@@ -369,22 +369,22 @@ export class HarnessTransport<UI_MESSAGE extends UIMessage = UIMessage>
   }
 
   private async openSession(): Promise<ActiveSession> {
-    // TODO(phase-1.1): switch to /api/session/start once the user has been
-    // provisioned per-user by the controller via the active ComputeProvider.
-    // For now /demo returns the shared sprite and is the only working path.
+    // /start returns the user's per-user sprite: existing-row fast path on
+    // subsequent sessions; first sign-in spawns the sprite, applies the active
+    // golden manifest, restarts the harness, and polls /healthz before
+    // returning. Cold-start budget is ~5–30s.
+    //
+    // 409 means another /start raced ours mid-provision — back off and retry;
+    // by the time we re-enter, the other call will have committed the row and
+    // we'll hit the existing-row path. We don't retry on other 4xx or 5xx
+    // because the controller's auto-provision branch already does its own
+    // internal recovery; surfacing the error lets the UI show a real failure
+    // instead of looping forever.
     this.setPhase({
       kind: 'starting',
       hint: 'first sign-in provisions your environment (~3 min); later sessions resume in seconds',
     })
-    const res = await fetch(`${this.apiBase}/api/controller/api/session/start`, {
-      method: 'POST',
-      credentials: 'include',
-    })
-    if (!res.ok) {
-      this.setPhase({ kind: 'idle' })
-      throw new Error(`controller /api/session/start: ${res.status} ${await res.text()}`)
-    }
-    const data = (await res.json()) as SessionStartResponse
+    const data = await this.startSessionWithRetry()
 
     const wsUrl =
       data.container.url.replace(/^https?:/, 'wss:') +
@@ -406,6 +406,26 @@ export class HarnessTransport<UI_MESSAGE extends UIMessage = UIMessage>
     ws.addEventListener('message', (e) => { void this.onWsMessage(e) })
     ws.addEventListener('close', () => this.onWsClose())
     return session
+  }
+
+  /** POST /api/session/start with retry on 409 (concurrent provisioning).
+   *  Up to 3 attempts, exponential backoff. Other failures bubble up. */
+  private async startSessionWithRetry(): Promise<SessionStartResponse> {
+    const url = `${this.apiBase}/api/controller/api/session/start`
+    const delays = [1500, 4000]
+    for (let attempt = 0; ; attempt++) {
+      const res = await fetch(url, { method: 'POST', credentials: 'include' })
+      if (res.ok) {
+        return (await res.json()) as SessionStartResponse
+      }
+      const body = await res.text().catch(() => '')
+      if (res.status === 409 && attempt < delays.length) {
+        await new Promise((r) => setTimeout(r, delays[attempt]))
+        continue
+      }
+      this.setPhase({ kind: 'idle' })
+      throw new Error(`controller /api/session/start: ${res.status} ${body}`)
+    }
   }
 
   /** Fetch the current upload list as a set of filenames. Used both
