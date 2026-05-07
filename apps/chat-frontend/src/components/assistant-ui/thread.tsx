@@ -247,7 +247,7 @@ function AssistantMessage() {
   return (
     <MessagePrimitive.Root className="grid w-full max-w-[var(--thread-max-width)] grid-cols-[auto_1fr] grid-rows-[auto_1fr] gap-y-1 py-3">
       <div className="col-start-1 row-start-1 mr-3 flex h-8 w-8 shrink-0 items-center justify-center rounded border border-t-border bg-t-surface font-display text-xs uppercase text-t-accent">
-        52L
+        Ω
       </div>
       <div className="col-start-2 row-start-1 my-0.5 max-w-[calc(var(--thread-max-width)-3rem)] break-words text-sm text-t-bright">
         <MessagePrimitive.Parts

@@ -1,7 +1,7 @@
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
-// Renders the harness's plain-markdown response with the 52L design
+// Renders the harness's plain-markdown response with the project's design
 // tokens. Used by the DemoPage assistant bubbles. Kept separate from
 // `MarkdownText` (which is wired into assistant-ui's Message primitive
 // and unavailable outside that context) so the demo runtime can stay

@@ -5,6 +5,29 @@ All notable changes to Omega are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-05-07
+
+### Changed
+
+- **Operator scripts are now env-driven** (breaking for anyone using
+  `apps/controller/scripts/{provision,update}-user.ts` from v0.1.0).
+  `PASS_VAULT_NAME` is now required; per-secret pass-cli item titles are
+  configurable via `PASS_ITEM_*` env vars; conventional env vars
+  (`ANTHROPIC_API_KEY`, `HARNESS_JWT_SECRET`, etc.) override pass-cli
+  lookup when set. Defaults no longer include any prior-org-specific
+  prefixes. See `apps/controller/scripts/README.md`.
+- Scrubbed prior-org references from comments and docs throughout
+  (`README.md`, `deploy/fly.md`, `packages/shell/src/AuthProvider.tsx`,
+  `apps/chat-frontend/src/components/{ProviderBar,MarkdownBlock}.tsx`).
+- Replaced the assistant avatar badge text in
+  `apps/chat-frontend/src/components/assistant-ui/thread.tsx` with the
+  glyph `Ω`.
+
+### Added
+
+- README "Status" line declaring the maintenance posture.
+- `apps/controller/scripts/README.md` documenting the env surface.
+
 ## [0.1.0] - 2026-05-03
 
 Initial public alpha release. Tagged as [`v0.1.0`](https://github.com/Logos-Flux/Omega/releases/tag/v0.1.0).

@@ -1,8 +1,8 @@
 # Deploy Omega to Fly.io
 
 Four Fly apps on a shared Postgres cluster. Optional: Fly Sprites for the
-pi-harness compute layer (the `SpritesProvider` was the original 52L
-production deploy; the OSS `DockerProvider` is the default).
+pi-harness compute layer (the `SpritesProvider` was the original
+closed-source production deploy; the OSS `DockerProvider` is the default).
 
 | Component | Fly app slug | Why |
 |---|---|---|
@@ -24,7 +24,7 @@ flyctl postgres create --name <your-pg> --region iad --vm-size shared-cpu-1x --v
 The controller needs to spawn per-user pi-harness sandboxes. On Fly there
 are two paths:
 
-- **Sprites** (the 52L production path). Set `COMPUTE_PROVIDER=sprites`
+- **Sprites** (the closed-source production path). Set `COMPUTE_PROVIDER=sprites`
   and `SPRITES_API_TOKEN`. Sprites lives in beta; sign up at
   <https://sprites.dev>.
 - **Docker on a sidecar host.** Run a small box (Hetzner, AWS lightsail,
@@ -131,7 +131,7 @@ Omega's OSS build doesn't ship app-level auth. On Fly the cleanest options:
 - **Tailscale serve** with `--public=false`, restricting access to your
   tailnet.
 
-The 52L production deploy (the precursor to this OSS release) used
+The closed-source production deploy (the precursor to this OSS release) used
 Cloudflare Access — the JWKS-verifying middleware is in git history if
 you want to restore it on top of the OSS branch.
 

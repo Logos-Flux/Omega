@@ -38,13 +38,33 @@ if (!email) die('usage: bun scripts/provision-user.ts <email>')
 const here = dirname(fileURLToPath(import.meta.url))
 const repoRoot = join(here, '..')
 
+// Operator config — set in your shell or via a sourced .env.operator file.
+// Vault name has no default (operators must declare which secret store
+// they're using); item titles have non-org-specific defaults that you can
+// override per deployment.
+const VAULT = process.env.PASS_VAULT_NAME
+if (!VAULT) die('PASS_VAULT_NAME env var is required (your pass-cli vault name).')
+
+const ITEM_SPRITES_TOKEN           = process.env.PASS_ITEM_SPRITES_TOKEN           ?? 'Sprites — API token'
+const ITEM_HARNESS_JWT_SECRET      = process.env.PASS_ITEM_HARNESS_JWT_SECRET      ?? 'HARNESS_JWT_SECRET'
+const ITEM_CONTROLLER_SVC_TOKEN    = process.env.PASS_ITEM_CONTROLLER_SVC_TOKEN    ?? 'Controller — service token'
+const ITEM_GOOGLE_OAUTH_CONNECTORS = process.env.PASS_ITEM_GOOGLE_OAUTH_CONNECTORS ?? 'Google OAuth — connectors'
+const ITEM_ANTHROPIC               = process.env.PASS_ITEM_ANTHROPIC               ?? 'Claude API'
+const ITEM_GOOGLE_AI               = process.env.PASS_ITEM_GOOGLE_AI               ?? 'Gemini API'
+const ITEM_PERPLEXITY              = process.env.PASS_ITEM_PERPLEXITY              ?? 'Perplexity API'
+
 function passField(title: string, field: string): string {
-  const r = spawnSync('pass-cli', ['item', 'view', '--vault-name', '52L', '--item-title', title, '--field', field], { encoding: 'utf8' })
+  const r = spawnSync('pass-cli', ['item', 'view', '--vault-name', VAULT!, '--item-title', title, '--field', field], { encoding: 'utf8' })
   if (r.status !== 0) die(`pass-cli failed: ${title} / ${field}`)
   return r.stdout.replace(/\n$/, '')
 }
 
-const SPRITES_TOKEN = passField('52L Sprites — API token', 'password')
+// Prefer env vars where they're conventionally set; fall through to pass-cli.
+function envOrPass(envVar: string, title: string, field: string): string {
+  return process.env[envVar] ?? passField(title, field)
+}
+
+const SPRITES_TOKEN = envOrPass('SPRITES_API_TOKEN', ITEM_SPRITES_TOKEN, 'password')
 
 async function spritesApi(path: string, init: RequestInit = {}): Promise<Response> {
   const headers = new Headers(init.headers)
@@ -141,22 +161,20 @@ console.log(`[provision] (re)starting harness…`)
   // user to run `accounts add` manually — even though the controller's
   // /api/oauth/google/access-token would mint cleanly.
   //
-  // NOTE: the pass-cli titles below are operator-specific (52L's vault
-  // layout). For non-52L deployments, replace these passField() calls
-  // with reads from your own secret manager or env vars. A future
-  // refactor should genericize via env-var fallback (e.g. honor
-  // ANTHROPIC_API_KEY etc. from the operator's shell when set).
+  // Each value is read from the corresponding env var if set, falling back
+  // to a pass-cli lookup against $PASS_VAULT_NAME for the configured item
+  // titles (see PASS_ITEM_* constants at the top of this file).
   const env = [
-    `ANTHROPIC_API_KEY=${passField('Claude API', 'API Key')}`,
-    `GOOGLE_API_KEY=${passField('Gemini API', 'API Key')}`,
-    `PERPLEXITY_API_KEY=${passField('Perplexity API', 'API Key')}`,
-    `HARNESS_JWT_SECRET=${passField('52L HARNESS_JWT_SECRET', 'password')}`,
+    `ANTHROPIC_API_KEY=${envOrPass('ANTHROPIC_API_KEY', ITEM_ANTHROPIC, 'API Key')}`,
+    `GOOGLE_API_KEY=${envOrPass('GOOGLE_API_KEY', ITEM_GOOGLE_AI, 'API Key')}`,
+    `PERPLEXITY_API_KEY=${envOrPass('PERPLEXITY_API_KEY', ITEM_PERPLEXITY, 'API Key')}`,
+    `HARNESS_JWT_SECRET=${envOrPass('HARNESS_JWT_SECRET', ITEM_HARNESS_JWT_SECRET, 'password')}`,
     'WORKSPACE_ROOT=/workspace',
     'PORT=8080',
     `CONTROLLER_BASE_URL=${controllerUrl()}`,
-    `CONTROLLER_SERVICE_TOKEN=${passField('52L Controller — service token (claude-code)', 'password')}`,
-    `GOOGLE_OAUTH_CLIENT_ID=${passField('52L Google OAuth — pi connectors', 'client_id')}`,
-    `GOOGLE_OAUTH_CLIENT_SECRET=${passField('52L Google OAuth — pi connectors', 'client_secret')}`,
+    `CONTROLLER_SERVICE_TOKEN=${envOrPass('CONTROLLER_SERVICE_TOKEN', ITEM_CONTROLLER_SVC_TOKEN, 'password')}`,
+    `GOOGLE_OAUTH_CLIENT_ID=${envOrPass('GOOGLE_OAUTH_CLIENT_ID', ITEM_GOOGLE_OAUTH_CONNECTORS, 'client_id')}`,
+    `GOOGLE_OAUTH_CLIENT_SECRET=${envOrPass('GOOGLE_OAUTH_CLIENT_SECRET', ITEM_GOOGLE_OAUTH_CONNECTORS, 'client_secret')}`,
   ].join(',')
 
   const start = spawnSync(

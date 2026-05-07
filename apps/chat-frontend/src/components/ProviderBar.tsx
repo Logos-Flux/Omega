@@ -76,7 +76,7 @@ export function ProviderBar() {
 }
 
 // Inline cache-invalidation indicator — small, unobtrusive, matched to the
-// 52L design tokens. The user can still send (the chat-api will silently
+// project's design tokens. The user can still send (the chat-api will silently
 // re-lock to the new pair when override:true is sent), but the cost is
 // surfaced rather than hidden. Per AGENT_ARCHITECTURE.md L386-388 the
 // switch is allowed; this is just a heads-up.
