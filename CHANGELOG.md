@@ -5,6 +5,57 @@ All notable changes to Omega are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-05-08
+
+Chat ↔ RAG integration. Wires a working retrieval loop end-to-end:
+operators point `RAG_API_URL` + `RAG_SERVICE_TOKEN` at a running rag-api
+deployment, users connect their Drive from Settings → Connectors and run
+a sync, and the model can call a `rag_search` tool inside the harness
+sandbox to cite from the user's own indexed content.
+
+### Added
+
+- **`rag_search` tool in the pi-harness sandbox.** New AI SDK tool that
+  POSTs `${RAG_API_URL}/api/v1/query` with the session's `user_id` and
+  the controller-issued service bearer; returns retrieved chunks for
+  the model to cite. Conditionally registered — only visible in the
+  model's tool list when both `RAG_API_URL` and `RAG_SERVICE_TOKEN` are
+  set on the harness env.
+- **Controller `/api/rag/*` browser-facing proxy.** Four routes:
+  `GET /api/rag/enabled` (feature flag, ungated), `POST /api/rag/sync`,
+  `GET /api/rag/status`, `POST /api/rag/forget`. The user_id sent to
+  rag-api is always pulled from the authenticated session — never from a
+  request body field — so the browser can't impersonate another user.
+  The service bearer is added on the server side; it never reaches any
+  browser-bound payload.
+- **Connect-Drive UX in chat-frontend.** New Settings → Connectors
+  section with a six-state Drive card: loading-flag → disabled →
+  needs-folder (instructions to create `my-ai/` in Drive) →
+  never-synced → syncing (3s polling) → synced (file_count + relative
+  time + Sync now / Forget). Self-gates on `/api/rag/enabled`, so OSS
+  deployments without a RAG backend hide the card entirely.
+- **`getRagConfig()` helper in the controller** (also lazy env reads,
+  one-shot warning on half-set pairs). Used by the proxy routes;
+  documented in `apps/controller/.env.example`.
+
+### Notes for operators
+
+To enable the full flow on an Omega deployment:
+
+1. Stand up the rag-api stack (RAGFlow + ingest worker + API wrapper —
+   see `apps/rag-api/` and migration `0003`).
+2. Set `RAG_API_URL` and `RAG_SERVICE_TOKEN` on **both** the controller
+   and the pi-harness env (the controller injects them into per-user
+   sandboxes; for direct harness deploys set them yourself).
+3. Set `RAG_KNOWLEDGE_BASE_FOLDER_ID` on the ingest worker to point at
+   a shared Drive folder (optional). Per-user `my-ai/` folders are
+   auto-discovered.
+4. Open Settings → Connectors → Sync.
+
+If `RAG_API_URL`/`RAG_SERVICE_TOKEN` are unset, all of the above is
+silently disabled — the harness tool isn't registered, the controller
+proxy 503s, and the frontend card hides itself.
+
 ## [0.3.0] - 2026-05-07
 
 RAG ingest hardening. The worker is now safe to point at a real Drive
