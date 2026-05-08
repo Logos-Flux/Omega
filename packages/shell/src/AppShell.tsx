@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { TopNav } from './TopNav'
 import { useNavConfig } from './use-nav-config'
+import { useTheme } from './use-theme'
 import type { AppId, NavLink, NavMenu } from './types'
 
 export interface AppShellProps {
@@ -40,6 +41,14 @@ export interface AppShellProps {
    */
   navConfigUrl?: string
   /**
+   * If set, fetch a theme JSON (`{ tokens: Record<string, string> }`)
+   * from this URL after mount and apply the values as CSS custom
+   * properties on `document.documentElement`. Lets a deployment swap
+   * the palette at runtime without rebuilding the bundle. Falls back
+   * to the bundled `:root` defaults on any fetch / parse failure.
+   */
+  themeUrl?: string
+  /**
    * When true, the TopNav floats above the content and is hidden by
    * default, sliding into view when the cursor approaches the top
    * edge of the viewport. Useful for pages that mock up their own
@@ -62,9 +71,12 @@ export function AppShell({
   links: staticLinks,
   menus: staticMenus,
   navConfigUrl,
+  themeUrl,
   floatingTopNav,
   children,
 }: AppShellProps) {
+  useTheme(themeUrl)
+
   const [drawerOpen, setDrawerOpen] = useState(true)
   useEffect(() => {
     if (typeof window === 'undefined' || !drawer) return

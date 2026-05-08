@@ -123,8 +123,34 @@ import:
 }
 ```
 
-A future release will add `themeUrl` (runtime JSON load) and a Settings
-→ Appearance picker.
+For runtime theme swaps without rebuilding, pass a `themeUrl` to
+`AppShell`:
+
+```tsx
+<AppShell themeUrl="https://themes.example.com/midnight.json">
+```
+
+The endpoint should return JSON shaped like:
+
+```json
+{
+  "name": "Midnight",
+  "tokens": {
+    "color-t-deep":   "#0c0f1d",
+    "color-t-bright": "#f4f5f8",
+    "color-t-accent": "#9b8cff"
+  }
+}
+```
+
+Token values are applied as `document.documentElement.style` CSS
+custom properties after the bundled defaults paint. Token keys are
+plain CSS variable names (no leading `--`); only ASCII names matching
+`/^[a-zA-Z][a-zA-Z0-9_-]*$/` are applied (so a malformed payload can't
+inject arbitrary properties).
+
+A future release will add a Settings → Appearance picker that browses
+a registry of themes.
 
 ### RAG (chat ↔ retrieval)
 

@@ -15,5 +15,6 @@ export {
   type NavConfig,
 } from './nav-config'
 export { useNavConfig } from './use-nav-config'
+export { useTheme, type Theme } from './use-theme'
 export type { AppId, MegaMenuItem, NavLink, NavMenu } from './types'
 export { cn } from './lib/cn'
