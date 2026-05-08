@@ -6,6 +6,7 @@ import { corsOptions } from './lib/cors'
 import { sessionRoutes } from './routes/session'
 import { adminRoutes } from './routes/admin'
 import { oauthRoutes } from './routes/oauth'
+import { ragRoutes } from './routes/rag'
 import { requireSession } from './middleware/session'
 import { adminConfigured } from './middleware/admin'
 
@@ -26,6 +27,12 @@ app.get('/api/me', requireSession, (c) => c.json({ user: c.get('user') }))
 
 app.route('/api/session', sessionRoutes)
 app.route('/api/admin', adminRoutes)
+
+// /api/rag/* — browser-facing proxy to rag-api. Routes self-gate on
+// session + rag config (503 when RAG is unconfigured). The /enabled
+// sub-route is always reachable and reports the feature-flag state to
+// the chat UI without round-tripping rag-api.
+app.route('/api/rag', ragRoutes)
 
 // Google OAuth is opt-in. Set ENABLE_GOOGLE_OAUTH=true to mount the
 // /api/oauth/google/* routes (Drive + per-user token minting). Most
