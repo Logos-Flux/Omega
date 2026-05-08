@@ -105,13 +105,14 @@ export async function crawlForUser(jobId: string, userId: string): Promise<{ fil
   }
 
   // Kick off RAGFlow parsing for any docs we just uploaded. Without
-  // this they sit in 'unparsed' state and don't show up in retrieval.
+  // this they sit in 'UNSTART' state and `/api/v1/query` 500s with
+  // `KeyError('id')` for any query that touches them. A parse failure
+  // here propagates: the worker (index.ts processOne) catches and marks
+  // the job `failed` with the error in `rag.users.last_error`, so the
+  // chat-side status UI surfaces it instead of pretending the crawl
+  // succeeded. Silent-swallow was the bug we're fixing.
   if (newDocIds.length > 0) {
-    try {
-      await parseDocuments(dataset.ragflow_dataset_id, newDocIds)
-    } catch (err) {
-      console.warn('[crawler] parse trigger failed:', (err as Error).message)
-    }
+    await parseDocuments(dataset.ragflow_dataset_id, newDocIds)
   }
 
   return { files_seen: files.length, files_changed: filesChanged }
