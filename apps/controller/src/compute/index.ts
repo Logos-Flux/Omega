@@ -1,6 +1,7 @@
 import type { ComputeProvider } from './types'
 import { SpritesProvider } from './sprites'
 import { DockerProvider } from './docker'
+import { dockerHarnessEnv } from './env'
 
 let _provider: ComputeProvider | null = null
 
@@ -29,14 +30,7 @@ export function getComputeProvider(): ComputeProvider {
       const image = process.env.HARNESS_IMAGE ?? 'omega-pi-harness:local'
       _provider = new DockerProvider({
         image,
-        env: {
-          ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
-          GOOGLE_API_KEY: process.env.GOOGLE_API_KEY,
-          PERPLEXITY_API_KEY: process.env.PERPLEXITY_API_KEY,
-          HARNESS_JWT_SECRET: process.env.HARNESS_JWT_SECRET,
-          WORKSPACE_ROOT: '/workspace',
-          PORT: '8080',
-        },
+        env: dockerHarnessEnv(),
         network: process.env.HARNESS_NETWORK,
         hostUrlBase: process.env.HARNESS_HOST_URL_BASE ?? 'http://localhost',
         socketPath: process.env.DOCKER_SOCKET ?? '/var/run/docker.sock',
@@ -49,3 +43,4 @@ export function getComputeProvider(): ComputeProvider {
 }
 
 export type { ComputeProvider, ContainerHandle, ContainerStatus } from './types'
+export { dockerHarnessEnv } from './env'
