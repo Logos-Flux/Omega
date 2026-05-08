@@ -1,22 +1,34 @@
-import { createContext, useContext, type ReactNode } from 'react'
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from 'react'
 
 /**
- * Auth stub for the OSS build.
+ * Auth provider for Omega frontends.
  *
- * Operators add their own auth at the reverse-proxy layer (oauth2-proxy,
- * Caddy basic auth, Tailscale serve, etc.) — the SPA doesn't enforce auth
- * itself. The original closed-source deployment used this provider to verify a
- * Cloudflare Access JWT and gate the chat surface; the OSS replacement
- * always returns `status: 'authenticated'` so the gate is open.
+ * Two operating modes:
  *
- * Drop-in replacement for multi-user deployments: replace this file with
- * a real auth verifier (e.g. CF Access JWKS check, OIDC + iframe poll,
- * etc.) and surface the user via `useAuth()`.
+ * 1. **API-backed** (default) — fetches `${apiBase}/api/me` on mount and
+ *    surfaces the returned user. The chat-api / controller stubs return
+ *    a single-user identity by default (`DEFAULT_USER_EMAIL`); operators
+ *    swap that for a real auth verifier (CF Access JWKS, OIDC, etc.) at
+ *    the API layer without touching the SPA.
+ *
+ * 2. **Fake** — pass `fakeUser` to skip the network and authenticate as
+ *    that user immediately. Useful for previewing the shell without the
+ *    API layer running. Production builds should never set this.
+ *
+ * `signOut()` clears the Cloudflare Access session if `cfAccessTeamDomain`
+ * is set; otherwise it just reloads the page (which causes the next
+ * `/api/me` to redirect-or-anonymous, depending on operator setup).
  */
 
-export type AuthStatus = 'loading' | 'authenticated' | 'anonymous'
-
-export interface AuthUser {
+export interface SessionUser {
   id: string
   email: string
   name: string | null
@@ -24,42 +36,98 @@ export interface AuthUser {
   sub: string
 }
 
-interface AuthContextValue {
+/** Older alias kept for callers that imported `AuthUser` pre-port. */
+export type AuthUser = SessionUser
+
+export type AuthStatus = 'loading' | 'authenticated' | 'anonymous'
+
+export interface AuthState {
+  user: SessionUser | null
   status: AuthStatus
-  user: AuthUser | null
+  signOut: () => void
+  refresh: () => Promise<void>
 }
 
-const DEFAULT_USER: AuthUser = {
-  id: 'local-user',
-  email: 'local@localhost',
-  name: 'Local User',
-  picture: null,
-  sub: 'local:local-user',
-}
-
-const AuthContext = createContext<AuthContextValue>({
-  status: 'authenticated',
-  user: DEFAULT_USER,
-})
+const AuthContext = createContext<AuthState | null>(null)
 
 export interface AuthProviderProps {
   children: ReactNode
-  /** Reserved — kept for API parity with hosted shells. */
+  /**
+   * Same-origin URL prefix for the app's API. Defaults to the current
+   * origin with no prefix. Pass `import.meta.env.BASE_URL` (or a constant
+   * derived from it) when the SPA is served under a sub-path like
+   * `/chat/`. The provider hits `${apiBase}/api/me` to load the session.
+   */
   apiBase?: string
-  /** Reserved — kept for API parity with hosted shells. */
+  /**
+   * Cloudflare Access team domain (e.g. `https://omega.cloudflareaccess.com`).
+   * Used by `signOut()` to clear the CF_Authorization cookie. If omitted,
+   * `signOut()` just reloads the page.
+   */
   cfAccessTeamDomain?: string
-  /** Reserved — kept for API parity with hosted shells. */
-  fakeUser?: AuthUser
+  /**
+   * Dev-only override. When provided, skips the `/api/me` probe and
+   * authenticates as this user.
+   */
+  fakeUser?: SessionUser
 }
 
-export function AuthProvider({ children, fakeUser }: AuthProviderProps) {
-  const value: AuthContextValue = {
-    status: 'authenticated',
-    user: fakeUser ?? DEFAULT_USER,
-  }
+export function AuthProvider({
+  children,
+  apiBase = '',
+  cfAccessTeamDomain,
+  fakeUser,
+}: AuthProviderProps) {
+  const [user, setUser] = useState<SessionUser | null>(fakeUser ?? null)
+  const [status, setStatus] = useState<AuthStatus>(fakeUser ? 'authenticated' : 'loading')
+
+  const base = useMemo(() => apiBase.replace(/\/$/, ''), [apiBase])
+
+  const refresh = useCallback(async () => {
+    if (fakeUser) {
+      setUser(fakeUser)
+      setStatus('authenticated')
+      return
+    }
+    try {
+      const res = await fetch(`${base}/api/me`, { credentials: 'include' })
+      if (res.ok) {
+        const data = (await res.json()) as { user: SessionUser }
+        setUser(data.user)
+        setStatus('authenticated')
+      } else {
+        setUser(null)
+        setStatus('anonymous')
+      }
+    } catch (err) {
+      console.error('[app-shell/auth] /api/me failed', err)
+      setUser(null)
+      setStatus('anonymous')
+    }
+  }, [base, fakeUser])
+
+  useEffect(() => {
+    void refresh()
+  }, [refresh])
+
+  const signOut = useCallback(() => {
+    if (cfAccessTeamDomain) {
+      window.location.href = `${cfAccessTeamDomain.replace(/\/$/, '')}/cdn-cgi/access/logout`
+    } else {
+      window.location.reload()
+    }
+  }, [cfAccessTeamDomain])
+
+  const value = useMemo<AuthState>(
+    () => ({ user, status, signOut, refresh }),
+    [user, status, signOut, refresh],
+  )
+
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }
 
-export function useAuth(): AuthContextValue {
-  return useContext(AuthContext)
+export function useAuth(): AuthState {
+  const ctx = useContext(AuthContext)
+  if (!ctx) throw new Error('useAuth must be used within <AuthProvider>')
+  return ctx
 }

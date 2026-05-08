@@ -1,3 +1,195 @@
-/* Reserved for shared shell styles. Frontends import this from
- * @omega-inc/app-shell/styles.css to keep the path stable across both
- * the OSS workspace package and any future published version. */
+/* ============================================
+   @omega-inc/app-shell — design tokens
+
+   Single source of truth for the design tokens and `.t-*` utility
+   classes consumed by the shell components and the apps that wrap
+   them.
+
+   Consumers must:
+     1. Import this AFTER `@import "tailwindcss"` so the `@theme`
+        block participates in Tailwind v4's compile pass.
+     2. Load the fonts in their index.html with a <link> tag (faster
+        than an @import here, and avoids @import-after-rules spec
+        warnings):
+          <link rel="preconnect" href="https://fonts.googleapis.com" />
+          <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+          <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+
+   Example (src/styles.css in any consuming app):
+     @import "tailwindcss";
+     @import "@omega-inc/app-shell/styles.css";
+
+   Operators wanting a different palette can override any of the
+   `--color-t-*` variables in :root after this import without
+   rebuilding the package.
+   ============================================ */
+
+/* --- Tailwind v4 token registration ---------------------------------
+ * Registers tokens with Tailwind so utilities like `bg-t-deep`,
+ * `text-t-bright`, `border-t-border`, `text-t-accent`, `font-display`
+ * compile against these names. Values are repeated in :root below so
+ * they're also available as plain CSS vars (`var(--color-t-accent)`).
+ */
+@theme {
+  --color-t-deep: #f4f5f8;
+  --color-t-surface: #ffffff;
+  --color-t-card: #ffffff;
+  --color-t-hover: #eaecf1;
+
+  --color-t-text: #2b2f3a;
+  --color-t-bright: #0c0f1d;
+  --color-t-muted: #6b7280;
+
+  --color-t-accent: #2b3aa2;
+  --color-t-accent-alt: #ff5a4e;
+  --color-t-accent-glow: rgba(43, 58, 162, 0.10);
+  --color-t-accent-alt-glow: rgba(255, 90, 78, 0.14);
+
+  --color-t-info: #2b3aa2;
+  --color-t-success: #10b981;
+  --color-t-warning: #f59e0b;
+  --color-t-error: #ff5a4e;
+
+  --color-t-border: #d9dce4;
+  --color-t-border-active: #2b3aa2;
+
+  --font-primary: 'Inter', system-ui, sans-serif;
+  --font-display: 'Space Grotesk', 'Inter', sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+  --font-terminal: 'JetBrains Mono', monospace;
+}
+
+:root {
+  --color-t-deep: #f4f5f8;
+  --color-t-surface: #ffffff;
+  --color-t-card: #ffffff;
+  --color-t-hover: #eaecf1;
+
+  --color-t-text: #2b2f3a;
+  --color-t-bright: #0c0f1d;
+  --color-t-muted: #6b7280;
+
+  --color-t-accent: #2b3aa2;
+  --color-t-accent-alt: #ff5a4e;
+  --color-t-accent-glow: rgba(43, 58, 162, 0.10);
+  --color-t-accent-alt-glow: rgba(255, 90, 78, 0.14);
+
+  --color-t-info: #2b3aa2;
+  --color-t-success: #10b981;
+  --color-t-warning: #f59e0b;
+  --color-t-error: #ff5a4e;
+
+  --color-t-border: #d9dce4;
+  --color-t-border-active: #2b3aa2;
+
+  --font-primary: 'Inter', system-ui, sans-serif;
+  --font-display: 'Space Grotesk', 'Inter', sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+  --font-terminal: 'JetBrains Mono', monospace;
+}
+
+.font-terminal {
+  font-family: var(--font-terminal);
+}
+
+html {
+  background-color: var(--color-t-deep);
+  color: var(--color-t-text);
+  font-family: var(--font-primary);
+  font-size: 15px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+.t-card {
+  background: var(--color-t-card);
+  border: 1px solid var(--color-t-border);
+  border-radius: 4px;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.t-card:hover {
+  border-color: var(--color-t-border-active);
+  box-shadow: 0 8px 24px rgba(43, 58, 162, 0.08);
+}
+
+.t-glow {
+  box-shadow: 0 0 18px var(--color-t-accent-alt-glow);
+}
+
+.t-bg-pattern {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent 0,
+    transparent 18px,
+    rgba(43, 58, 162, 0.025) 18px,
+    rgba(43, 58, 162, 0.025) 19px
+  );
+}
+
+.t-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--color-t-hover) 0%,
+    var(--color-t-card) 40%,
+    var(--color-t-hover) 80%
+  );
+  background-size: 200% 100%;
+  animation: t-shimmer 1.4s ease-in-out infinite;
+}
+
+@keyframes t-shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.status-dot.live {
+  background: var(--color-t-accent-alt);
+  box-shadow: 0 0 6px var(--color-t-accent-alt-glow);
+  animation: status-blink 1.2s ease-in-out infinite;
+}
+
+.status-dot.idle {
+  background: var(--color-t-warning);
+}
+
+.status-dot.error {
+  background: var(--color-t-error);
+}
+
+@keyframes status-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--color-t-deep);
+}
+
+::-webkit-scrollbar-thumb {
+  background: #c5c9d3;
+  border-radius: 2px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-t-accent);
+}
