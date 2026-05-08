@@ -15,6 +15,7 @@ import { AgentModeProvider, useAgentMode } from './lib/agent-mode'
 import { HarnessTransport } from './lib/harness-transport'
 import { HarnessSessionProvider } from './lib/harness-session'
 import { QuickActionsProvider } from './lib/quick-actions'
+import { brand } from './lib/brand'
 import { ThreadLockProvider, useThreadLock } from './lib/thread-lock'
 import { SettingsPage, isSettingsPath } from './components/SettingsPage'
 import { SpriteWarmupProvider } from './lib/sprite-warmup'
@@ -352,6 +353,7 @@ function ChatPageInner({
       <HarnessSessionProvider transport={harnessTransport}>
         <AppShell
           appId="chat"
+          brandText={brand.name}
           drawer={<ChatDrawer />}
           topNavEndSlot={
             <UserMenu

@@ -92,6 +92,21 @@ import { QuickActionsProvider } from './lib/quick-actions'
 OSS default: empty array → cards don't render, empty state is just
 headline + tagline + composer.
 
+### Brand identity
+
+Build-time env on `apps/chat-frontend`:
+
+```bash
+VITE_BRAND_NAME=Acme        # wordmark + page title + empty-state badge
+VITE_BRAND_GLYPH=A          # single character used as the assistant avatar
+```
+
+OSS defaults: `Omega` / `Ω`. Vite inlines these into the bundle, so
+rebuilding the frontend is required to change them.
+
+The top-nav uses the same value automatically (`<AppShell brandText={brand.name}>`
+in `App.tsx`).
+
 ### Theme
 
 Override any `--color-t-*` variable in `:root` after the app-shell

@@ -6,6 +6,7 @@ import {
   useMessage,
 } from '@assistant-ui/react'
 import { useQuickActions } from '../../lib/quick-actions'
+import { brand } from '../../lib/brand'
 import {
   ArrowDownIcon,
   ArrowUpIcon,
@@ -68,7 +69,7 @@ function ThreadWelcome() {
     <ThreadPrimitive.Empty>
       <div className="flex w-full max-w-[var(--thread-max-width)] flex-grow flex-col items-center justify-center text-center">
         <div className="mb-3 inline-block px-3 py-1 text-[10px] font-display uppercase tracking-[0.2em] text-t-accent border border-t-accent/40 rounded">
-          Omega
+          {brand.name}
         </div>
         <h1 className="mb-2 text-3xl font-display font-semibold text-t-bright">
           How can I help?
@@ -213,7 +214,7 @@ function AssistantMessage() {
   return (
     <MessagePrimitive.Root className="grid w-full max-w-[var(--thread-max-width)] grid-cols-[auto_1fr] grid-rows-[auto_1fr] gap-y-1 py-3">
       <div className="col-start-1 row-start-1 mr-3 flex h-8 w-8 shrink-0 items-center justify-center rounded border border-t-border bg-t-surface font-display text-xs uppercase text-t-accent">
-        Ω
+        {brand.glyph}
       </div>
       <div className="col-start-2 row-start-1 my-0.5 max-w-[calc(var(--thread-max-width)-3rem)] break-words text-sm text-t-bright">
         <MessagePrimitive.Parts
