@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { getPool } from '../../lib/db'
-import { resolveUser } from '../../lib/users'
+import { findUser, resolveUser } from '../../lib/users'
 import { resolveTenantDataset } from '../../lib/dataset'
 import { deleteDocument } from '../../lib/ragflow'
 
@@ -46,10 +46,16 @@ userRoutes.post('/sync', async (c) => {
 })
 
 // GET /api/v1/users/:user_id/status
+//
+// 404 for unknown users — never auto-creates a row. The chat side's
+// "Indexing your Drive…" UI polls this; without the 404 a typo'd or
+// stale user_id would silently provision a phantom row and feed the
+// worker a retry loop on a user who never asked to ingest.
 userRoutes.get('/:user_id/status', async (c) => {
   const tenant = c.get('tenant')
   const chatUserId = c.req.param('user_id')
-  const user = await resolveUser(tenant.id, chatUserId)
+  const user = await findUser(tenant.id, chatUserId)
+  if (!user) return c.json({ error: 'user not found' }, 404)
   const pool = getPool()
 
   const [u, jobs, fileCount] = await Promise.all([
@@ -84,10 +90,15 @@ userRoutes.get('/:user_id/status', async (c) => {
 // POST /api/v1/users/:user_id/forget
 // Drops user_file_access rows; garbage-collects rag.files rows that
 // now have zero referrers (and tells RAGFlow to delete the doc too).
+//
+// Idempotent: unknown user_ids return `removed_files: 0` rather than
+// 404, so a "forget me" that runs twice (or hits a user the chat side
+// already cleaned up) doesn't error.
 userRoutes.post('/:user_id/forget', async (c) => {
   const tenant = c.get('tenant')
   const chatUserId = c.req.param('user_id')
-  const user = await resolveUser(tenant.id, chatUserId)
+  const user = await findUser(tenant.id, chatUserId)
+  if (!user) return c.json({ ok: true, removed_files: 0 })
   const pool = getPool()
   const dataset = await resolveTenantDataset(tenant.id)
 
