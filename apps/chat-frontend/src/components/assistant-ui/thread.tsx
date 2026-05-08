@@ -1,4 +1,3 @@
-import { useEffect, useState } from 'react'
 import {
   ActionBarPrimitive,
   ComposerPrimitive,
@@ -6,6 +5,7 @@ import {
   ThreadPrimitive,
   useMessage,
 } from '@assistant-ui/react'
+import { useQuickActions } from '../../lib/quick-actions'
 import {
   ArrowDownIcon,
   ArrowUpIcon,
@@ -82,71 +82,37 @@ function ThreadWelcome() {
   )
 }
 
-const SUGGESTIONS: { label: string; description: string }[] = [
-  {
-    label: 'Qualify Sales Leads',
-    description: 'Score inbound leads against ICP, surface buying signals, and route to the right rep.',
-  },
-  {
-    label: 'New Customer Intake',
-    description: 'Guided onboarding workflow that captures the data your team needs to get to first value.',
-  },
-  {
-    label: 'Market Research Report',
-    description: 'Pull competitor pricing, positioning, and trends into a one-page brief you can share.',
-  },
-  {
-    label: 'Brand Design and Logo Inspiration Board',
-    description: 'Mood-board references, palettes, and type pairings tailored to your brand brief.',
-  },
-  {
-    label: 'Go to Market Strategy',
-    description: 'Channel mix, ICP, messaging pillars, and a 90-day rollout plan in one pass.',
-  },
-  {
-    label: 'Social Media and Blog Posts',
-    description: 'Multi-channel content drafts written in your voice from a single topic prompt.',
-  },
-]
-
+// Quick-action cards. Empty in OSS by default — the empty state is
+// just headline + tagline + composer. Deployments that want curated
+// prompt cards populate the array via <QuickActionsProvider> in
+// App.tsx (see lib/quick-actions.tsx + docs/CUSTOMIZATION.md).
 function ThreadWelcomeSuggestions() {
-  const [toast, setToast] = useState<string | null>(null)
-  useEffect(() => {
-    if (!toast) return
-    const t = window.setTimeout(() => setToast(null), 2500)
-    return () => window.clearTimeout(t)
-  }, [toast])
+  const { actions, onSelect } = useQuickActions()
+  if (actions.length === 0) return null
 
   return (
-    <>
-      <div className="grid w-full grid-cols-1 gap-2 sm:grid-cols-2">
-        {SUGGESTIONS.map((s) => (
-          <button
-            key={s.label}
-            type="button"
-            onClick={() => setToast(s.label)}
-            className="t-card group relative flex flex-col items-start gap-1 p-3 text-left transition-colors hover:border-t-border-active hover:bg-t-hover"
-          >
-            <span className="absolute right-2 top-2 rounded border border-t-accent-alt/40 bg-t-accent-alt/5 px-1.5 py-0.5 text-[9px] font-display uppercase tracking-wider text-t-accent-alt opacity-80 group-hover:opacity-100">
-              Coming soon
-            </span>
-            <span className="pr-20 text-xs font-display uppercase tracking-wider text-t-accent">
-              {s.label}
-            </span>
-            <span className="text-sm leading-snug text-t-text">{s.description}</span>
-          </button>
-        ))}
-      </div>
-      {toast && (
-        <div
-          role="status"
-          aria-live="polite"
-          className="pointer-events-none fixed bottom-6 left-1/2 z-50 -translate-x-1/2 rounded-full border border-t-accent-alt/40 bg-t-deep px-4 py-2 text-xs font-display uppercase tracking-wider text-t-accent-alt shadow-lg"
+    <div className="grid w-full grid-cols-1 gap-2 sm:grid-cols-2">
+      {actions.map((action) => (
+        <button
+          key={action.id}
+          type="button"
+          onClick={() => onSelect(action)}
+          className="t-card group relative flex flex-col items-start gap-1 p-3 text-left transition-colors hover:border-t-border-active hover:bg-t-hover"
         >
-          Coming soon — {toast}
-        </div>
-      )}
-    </>
+          {action.badge && (
+            <span className="absolute right-2 top-2 rounded border border-t-accent-alt/40 bg-t-accent-alt/5 px-1.5 py-0.5 text-[9px] font-display uppercase tracking-wider text-t-accent-alt opacity-80 group-hover:opacity-100">
+              {action.badge}
+            </span>
+          )}
+          <span className="pr-20 text-xs font-display uppercase tracking-wider text-t-accent">
+            {action.label}
+          </span>
+          {action.description && (
+            <span className="text-sm leading-snug text-t-text">{action.description}</span>
+          )}
+        </button>
+      ))}
+    </div>
   )
 }
 

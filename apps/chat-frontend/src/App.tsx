@@ -14,6 +14,7 @@ import { ProviderSelectionProvider, tierForModel, useProviderSelection, type Pro
 import { AgentModeProvider, useAgentMode } from './lib/agent-mode'
 import { HarnessTransport } from './lib/harness-transport'
 import { HarnessSessionProvider } from './lib/harness-session'
+import { QuickActionsProvider } from './lib/quick-actions'
 import { ThreadLockProvider, useThreadLock } from './lib/thread-lock'
 import { SettingsPage, isSettingsPath } from './components/SettingsPage'
 import { SpriteWarmupProvider } from './lib/sprite-warmup'
@@ -125,7 +126,12 @@ function AppShellRouter() {
         <AgentModeProvider>
           <ProviderSelectionProvider>
             <ThreadLockProvider>
-              <ChatPage />
+              {/* Quick-action cards on the chat empty state. OSS ships
+                  no actions — operators populate via this provider's
+                  `actions` + `onSelect` props. See docs/CUSTOMIZATION.md. */}
+              <QuickActionsProvider>
+                <ChatPage />
+              </QuickActionsProvider>
             </ThreadLockProvider>
           </ProviderSelectionProvider>
         </AgentModeProvider>
