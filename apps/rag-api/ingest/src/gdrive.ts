@@ -22,6 +22,34 @@ function driveClient(accessToken: string) {
   return google.drive({ version: 'v3', auth })
 }
 
+// Find a folder by exact name in the user's own Drive (must be owner).
+// Used to resolve each user's personal folder (default `my-ai`) on first
+// sync. Restricting to `'me' in owners` avoids matching folders shared
+// from elsewhere that happen to have the same name.
+//
+// Returns the folder id, or null if no match. With multiple matches we
+// pick the oldest (first by createdTime) and log a warning — folder
+// names aren't unique in Drive but the typical case is exactly one.
+export async function findFolderByName(
+  accessToken: string,
+  name: string,
+): Promise<{ id: string; ambiguous: boolean } | null> {
+  const drive = driveClient(accessToken)
+  // Single-quote escape so a name like `bob's docs` doesn't break the q.
+  const safeName = name.replace(/'/g, "\\'")
+  const res = await drive.files.list({
+    q: `name = '${safeName}' and mimeType = '${FOLDER_MIME}' and trashed = false and 'me' in owners`,
+    fields: 'files(id, name, createdTime)',
+    orderBy: 'createdTime',
+    pageSize: 10,
+    spaces: 'drive',
+  })
+  const files = res.data.files ?? []
+  const first = files[0]
+  if (!first?.id) return null
+  return { id: first.id, ambiguous: files.length > 1 }
+}
+
 // List every file the user owns or has been granted access to.
 //
 // If `folderAllowlist` is non-empty, the walk is recursive but scoped

@@ -1,13 +1,72 @@
 import { createHash } from 'node:crypto'
 import { getPool } from './db'
 import { getDriveAccessToken } from './oauth'
-import { listAllUserFiles, downloadFile, type DriveFile } from './gdrive'
+import { listAllUserFiles, downloadFile, findFolderByName, type DriveFile } from './gdrive'
 import { uploadDocument, deleteDocument, parseDocuments } from './ragflow'
 
 interface UserRow {
   id: string
   tenant_id: string
   chat_user_id: string
+  gdrive_my_ai_folder_id: string | null
+  gdrive_my_ai_status: 'unknown' | 'present' | 'missing'
+}
+
+// Read crawl-scope env lazily — eager top-level consts capture at first
+// module-load and tests / per-process overrides can't change them.
+function personalFolderName(): string {
+  return process.env.RAG_PERSONAL_FOLDER_NAME ?? 'my-ai'
+}
+function knowledgeBaseFolderId(): string | null {
+  return process.env.RAG_KNOWLEDGE_BASE_FOLDER_ID || null
+}
+function legacyAllowlist(): string[] {
+  return (process.env.RAG_FOLDER_ALLOWLIST ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+}
+
+// Resolve and cache the user's personal folder id. Idempotent — if the
+// row already has a present id we return it without hitting Drive. On
+// 'missing', we don't re-resolve until the chat side bumps status back
+// to 'unknown' (e.g. via a "I created the folder, please retry" UI).
+async function resolveMyAiFolder(
+  user: UserRow,
+  accessToken: string,
+): Promise<string | null> {
+  if (user.gdrive_my_ai_status === 'present' && user.gdrive_my_ai_folder_id) {
+    return user.gdrive_my_ai_folder_id
+  }
+  if (user.gdrive_my_ai_status === 'missing') {
+    return null
+  }
+  const pool = getPool()
+  const name = personalFolderName()
+  const found = await findFolderByName(accessToken, name)
+  if (!found) {
+    await pool.query(
+      `UPDATE rag.users
+          SET gdrive_my_ai_folder_id = NULL,
+              gdrive_my_ai_status = 'missing'
+        WHERE id = $1`,
+      [user.id],
+    )
+    return null
+  }
+  if (found.ambiguous) {
+    console.warn(
+      `[crawler] multiple "${name}" folders for user ${user.chat_user_id}; using oldest (${found.id})`,
+    )
+  }
+  await pool.query(
+    `UPDATE rag.users
+        SET gdrive_my_ai_folder_id = $2,
+            gdrive_my_ai_status = 'present'
+      WHERE id = $1`,
+    [user.id, found.id],
+  )
+  return found.id
 }
 
 interface DatasetRow {
@@ -27,7 +86,8 @@ export async function crawlForUser(jobId: string, userId: string): Promise<{ fil
   const pool = getPool()
 
   const userRes = await pool.query<UserRow>(
-    `SELECT id, tenant_id, chat_user_id FROM rag.users WHERE id = $1`,
+    `SELECT id, tenant_id, chat_user_id, gdrive_my_ai_folder_id, gdrive_my_ai_status
+       FROM rag.users WHERE id = $1`,
     [userId],
   )
   const user = userRes.rows[0]
@@ -43,15 +103,44 @@ export async function crawlForUser(jobId: string, userId: string): Promise<{ fil
   }
 
   const accessToken = await getDriveAccessToken(user.chat_user_id)
-  // RAG_FOLDER_ALLOWLIST is comma-separated Drive folder IDs (or shared-
-  // drive IDs). Empty/unset → whole-drive walk. Multi-tenant promotion
-  // path: replace this env read with a per-tenant lookup against a
-  // rag.tenant_drive_scope table. Same shape, same listAllUserFiles call.
-  const allowlist = (process.env.RAG_FOLDER_ALLOWLIST ?? '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean)
-  const files = await listAllUserFiles(accessToken, allowlist.length > 0 ? allowlist : undefined)
+
+  // Compose crawl roots from up to three sources, in priority order:
+  //   1. The user's personal folder (default name `my-ai`, configurable
+  //      via RAG_PERSONAL_FOLDER_NAME). Resolved once and cached on
+  //      rag.users.gdrive_my_ai_folder_id.
+  //   2. The shared knowledge-base folder (RAG_KNOWLEDGE_BASE_FOLDER_ID),
+  //      identical for every user; per-user OAuth permissions filter
+  //      what each user actually sees inside it.
+  //   3. Legacy RAG_FOLDER_ALLOWLIST. Deprecated — log a warning and
+  //      remove next release. Kept as a one-release fallback so
+  //      operators don't lose ingest while they migrate config.
+  const roots: string[] = []
+  const myAiId = await resolveMyAiFolder(user, accessToken)
+  if (myAiId) roots.push(myAiId)
+  const kbId = knowledgeBaseFolderId()
+  if (kbId) roots.push(kbId)
+  const legacy = legacyAllowlist()
+  if (legacy.length > 0) {
+    console.warn(
+      '[crawler] RAG_FOLDER_ALLOWLIST is deprecated; switch to RAG_KNOWLEDGE_BASE_FOLDER_ID + per-user `my-ai` folders. ' +
+        'This env will be removed in the next release.',
+    )
+    roots.push(...legacy)
+  }
+
+  // Refuse to whole-Drive walk. Earlier behaviour (empty allowlist →
+  // full walk) was the bug we're closing — it hammered users with
+  // thousands of irrelevant files and made 404'd phantom users
+  // (issue #1) crawl forever. If neither root is configured we set
+  // a clear last_error and let the worker mark the job failed.
+  if (roots.length === 0) {
+    throw new Error(
+      `no crawl scope: user has no "${personalFolderName()}" folder in their Drive ` +
+        `(create one or have an admin set RAG_KNOWLEDGE_BASE_FOLDER_ID)`,
+    )
+  }
+
+  const files = await listAllUserFiles(accessToken, roots)
 
   let filesChanged = 0
   let filesFailed = 0

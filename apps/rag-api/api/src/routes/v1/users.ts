@@ -59,8 +59,14 @@ userRoutes.get('/:user_id/status', async (c) => {
   const pool = getPool()
 
   const [u, jobs, fileCount] = await Promise.all([
-    pool.query<{ last_synced_at: Date | null; last_error: string | null; drive_oauth_status: string }>(
-      `SELECT last_synced_at, last_error, drive_oauth_status FROM rag.users WHERE id = $1`,
+    pool.query<{
+      last_synced_at: Date | null
+      last_error: string | null
+      drive_oauth_status: string
+      gdrive_my_ai_status: 'unknown' | 'present' | 'missing'
+    }>(
+      `SELECT last_synced_at, last_error, drive_oauth_status, gdrive_my_ai_status
+         FROM rag.users WHERE id = $1`,
       [user.id],
     ),
     pool.query<{ id: string; status: string }>(
@@ -84,6 +90,9 @@ userRoutes.get('/:user_id/status', async (c) => {
     in_flight_job_id: inflight?.id ?? null,
     last_error: u0?.last_error ?? null,
     drive_oauth_status: u0?.drive_oauth_status ?? 'pending',
+    // Lets the chat-side UX prompt the user to create their personal
+    // folder if it's missing, without re-running the Drive lookup.
+    my_ai_folder_status: u0?.gdrive_my_ai_status ?? 'unknown',
   })
 })
 
