@@ -28,6 +28,7 @@ import {
   type Profile,
   type ProfileProposal,
 } from '../lib/harness-api'
+import { DriveConnectCard } from './DriveConnectCard'
 
 // ---------- Section nav ---------------------------------------------------
 
@@ -50,7 +51,7 @@ const SECTIONS: ReadonlyArray<{
   { id: 'preferences', label: 'Preferences', phase: 'Phase V', implemented: false },
   { id: 'persona', label: 'Persona', phase: 'Phase VI', implemented: false },
   { id: 'quick-actions', label: 'Quick Actions', phase: 'Phase III', implemented: false },
-  { id: 'connectors', label: 'Connectors', phase: 'Phase IV', implemented: false },
+  { id: 'connectors', label: 'Connectors', phase: 'Phase IV', implemented: true },
   { id: 'audit', label: 'Audit', phase: 'Phase IX', implemented: false },
 ]
 
@@ -107,7 +108,10 @@ export function SettingsPage() {
               </div>
             )}
             {section === 'profile' && <ProfileSection session={session} />}
-            {section !== 'profile' && <StubSection sectionId={section} />}
+            {section === 'connectors' && <ConnectorsSection />}
+            {section !== 'profile' && section !== 'connectors' && (
+              <StubSection sectionId={section} />
+            )}
           </div>
         </main>
       </div>
@@ -201,6 +205,27 @@ function StubSection({ sectionId }: { sectionId: SectionId }) {
         {meta.label}
       </h1>
       <p className="text-sm text-t-muted">Coming in {meta.phase}.</p>
+    </section>
+  )
+}
+
+// ---------- Connectors section --------------------------------------------
+//
+// Single concrete connector for now (Drive via the rag-api wrapper).
+// Future connectors (Slack, Notion, Linear, etc.) drop in here.
+
+function ConnectorsSection() {
+  return (
+    <section className="space-y-6">
+      <header>
+        <h1 className="font-display text-2xl font-semibold text-t-bright">
+          Connectors
+        </h1>
+        <p className="mt-1 text-sm text-t-muted">
+          Wire external content into the assistant.
+        </p>
+      </header>
+      <DriveConnectCard />
     </section>
   )
 }
