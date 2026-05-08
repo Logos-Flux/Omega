@@ -5,6 +5,68 @@ All notable changes to Omega are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-05-07
+
+RAG ingest hardening. The worker is now safe to point at a real Drive
+without bombing on the first oddly-shaped file or silently leaving
+documents un-chunked. Operators with a `RAG_FOLDER_ALLOWLIST` config
+should migrate to `RAG_PERSONAL_FOLDER_NAME` + `RAG_KNOWLEDGE_BASE_FOLDER_ID`
+this release; the legacy env still works with a deprecation warning and
+will be removed in v0.4.0.
+
+### Added
+
+- **Per-user `my-ai/` folder** auto-discovery. Each user's personal
+  ingest folder is resolved on first sync (`drive.files.list` with
+  `'me' in owners`), cached on the user row, and never re-resolved
+  unless the chat side bumps status back. Folder name is configurable
+  via `RAG_PERSONAL_FOLDER_NAME` (default: `my-ai`).
+- **Shared knowledge-base folder** via `RAG_KNOWLEDGE_BASE_FOLDER_ID`
+  — single folder ID applied to every user. Per-user OAuth permissions
+  filter what each user actually sees inside it.
+- `GET /api/v1/users/:id/status` now returns `my_ai_folder_status`
+  (`unknown` | `present` | `missing`) so the chat-side UI can prompt
+  the user to create their personal folder when missing.
+- Migration `0003_my_ai_folder.sql`: adds `gdrive_my_ai_folder_id`,
+  `gdrive_my_ai_status` to `rag.users`.
+
+### Changed
+
+- `GET /api/v1/users/:id/status` returns **404** for unknown user_ids
+  instead of silently auto-creating a `rag.users` row. The auto-create
+  caused a phantom-user retry loop the chat side hit during 404 polls.
+  `/sync` is now the only endpoint that creates a row.
+- The RAGFlow client (`apps/rag-api/ingest/src/ragflow.ts`) now treats
+  envelope errors as failures. RAGFlow returns `200 OK` with a non-zero
+  envelope `code` on parse-step failures (e.g. `KeyError('id')`); the
+  client previously swallowed those as success and the docs sat at
+  `run: UNSTART, chunks: 0` forever, breaking retrieval.
+- `RAGFLOW_BASE_URL` and `RAGFLOW_API_KEY` are now read lazily per call
+  instead of captured at module load (eager-const trap).
+- Crawler's per-file ingest is now wrapped in `try/catch`. A transient
+  Drive 5xx, an export size limit, or a single RAGFlow upload rejection
+  no longer aborts the whole crawl.
+- The crawler **refuses to whole-Drive walk**. With both
+  `RAG_FOLDER_ALLOWLIST` empty and no personal/shared folder, the job
+  fails with a clear `last_error` instead of hammering Drive.
+
+### Fixed
+
+- Crawler skips Google native types we don't have an exporter for
+  (Drawings, Forms, Apps Scripts, Shortcuts, Sites, My-Maps). These
+  used to fall through to `drive.files.get(alt: 'media')` and abort
+  the entire crawl with `Only files with binary content can be
+  downloaded`.
+- The crawler no longer silent-catches RAGFlow parse-step failures.
+  A failed parse now surfaces as a failed sync job with the error in
+  `rag.users.last_error`.
+
+### Deprecated
+
+- `RAG_FOLDER_ALLOWLIST` — replaced by per-user `my-ai/` +
+  `RAG_KNOWLEDGE_BASE_FOLDER_ID`. Still respected for one release with
+  a console warning. Will be removed in v0.4.0.
+
 ## [0.2.0] - 2026-05-07
 
 ### Changed
