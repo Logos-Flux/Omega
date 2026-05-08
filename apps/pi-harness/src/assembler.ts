@@ -42,6 +42,7 @@ import {
   ProfileValidationError,
   type Profile,
 } from './profile'
+import { isRagEnabled, searchRag } from './lib/rag'
 
 // ---
 // Cache marker helpers. Slots 1–7 are the "stable prefix" — the bits
@@ -289,6 +290,7 @@ async function readUploadsCatalog(sessionId: string): Promise<string | null> {
 function toolsForProvider(
   provider: ProviderId,
   sessionId: string,
+  userId: string,
 ): ToolSet | undefined {
   if (provider === 'perplexity') return undefined
   const tools: Record<string, unknown> = {
@@ -419,6 +421,35 @@ function toolsForProvider(
         return { ok: true, mode: m, bytesWritten: text.length }
       },
     }),
+  }
+  // rag_search — registered only when both RAG_API_URL and
+  // RAG_SERVICE_TOKEN are set on the harness env. Lets the model query
+  // the user's indexed Drive content (per-user ACL applied server-side).
+  if (isRagEnabled()) {
+    tools.rag_search = tool({
+      description: [
+        "Search the user's indexed Drive content (their personal `my-ai/` folder plus any shared knowledge base) for chunks relevant to a query.",
+        'Returns up to top_k snippets with file_name + source_url for citation.',
+        'Use this when the user asks a question whose answer is likely in their own documents rather than general knowledge.',
+        'Empty `chunks: []` is normal when nothing matches or the user has not synced any files yet — say so plainly rather than fabricating an answer.',
+      ].join(' '),
+      inputSchema: z.object({
+        query: z
+          .string()
+          .describe('Natural-language question or keywords. The retriever does its own embedding + keyword hybrid; you do not need to format this for any specific search syntax.'),
+        top_k: z
+          .number()
+          .int()
+          .min(1)
+          .max(20)
+          .optional()
+          .describe('Max chunks to return. Default 5. Raise to 10–15 for broad/exploratory questions.'),
+      }),
+      execute: async ({ query, top_k }) => {
+        const result = await searchRag({ userId, query, topK: top_k })
+        return result
+      },
+    })
   }
   if (provider === 'anthropic') {
     tools.web_search = anthropicTools.tools.webSearch_20250305({ maxUses: 5 })
@@ -561,7 +592,7 @@ export const PromptAssembler = {
       modelMessages.push({ role: 'user', content: prompt })
     }
 
-    const tools = toolsForProvider(provider, sessionId)
+    const tools = toolsForProvider(provider, sessionId, invocation.userId)
 
     return {
       systemMessages,
