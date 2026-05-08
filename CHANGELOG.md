@@ -5,6 +5,27 @@ All notable changes to Omega are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] - 2026-05-08
+
+User-facing affordances for files in chat. The "Add file" button in
+the drawer was the only path before; now drag-and-drop works and
+uploads can be removed without starting a new chat.
+
+### Added
+
+- **Drag-and-drop into chat.** New `<ChatDropZone>` wraps the chat
+  surface; drop a file anywhere on the chat tab and it uploads into
+  the active session via the same path as the drawer's "Add file"
+  button. Full-bleed overlay during drag for feedback. Uses the
+  standard dragenter-counter pattern so cursor movement across nested
+  child elements doesn't flicker the overlay.
+- **Remove from uploads.** New `DELETE /uploads/:sessionId/:filename`
+  route on the harness with the same path-traversal protection as
+  `saveUpload` (`safeSessionId` + `safeFilename`). New
+  `deleteUpload(filename)` on the chat-frontend `HarnessSession`
+  context. The drawer's Uploads list now renders an X button on each
+  row; idempotent (missing file → no error).
+
 ## [0.4.1] - 2026-05-08
 
 Patch on top of v0.4.0. Fixes a silent gap that left the chat ↔ RAG
