@@ -5,6 +5,36 @@ All notable changes to Omega are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-05-08
+
+Patch on top of v0.4.0. Fixes a silent gap that left the chat ↔ RAG
+loop half-broken on the OSS docker path, and adds an operator
+quickstart for standing up the full RAG stack.
+
+### Fixed
+
+- **DockerProvider now forwards `RAG_API_URL` + `RAG_SERVICE_TOKEN` to
+  spawned pi-harness containers.** Without this, the harness's
+  `rag_search` tool silently skipped registration even when the
+  controller's `/api/rag/*` proxy worked — the chat surface looked
+  half-wired (Settings card live, model couldn't actually search). The
+  env-builder is now a pure function in `apps/controller/src/compute/env.ts`
+  for testability.
+
+### Added
+
+- **`deploy/RAG.md`** — operator quickstart: bring up upstream RAGFlow,
+  configure embedding provider, register the dataset link, wire
+  chat ↔ RAG, smoke test. Includes Embedding model trade-offs,
+  Gotchas list (DeepInfra base URL, `document_ids` constraint,
+  refuse-to-walk-whole-Drive, parse failures), Disabling RAG, and a
+  "Where to look when things break" walkthrough with SQL for the
+  per-user state tables.
+- **`deploy/docker-compose.rag.yml`** — overlay that adds the
+  `rag-ingest` worker (missing from the base compose) and forwards
+  the RAG env to the controller. Operator runs:
+  `docker compose -f docker-compose.yml -f docker-compose.rag.yml up -d --build`.
+
 ## [0.4.0] - 2026-05-08
 
 Chat ↔ RAG integration. Wires a working retrieval loop end-to-end:
