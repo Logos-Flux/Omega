@@ -1,0 +1,57 @@
+# RAG add-on overlay. Compose with the base file:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.rag.yml up -d --build
+#
+# Adds the rag-ingest worker. The rag-api wrapper is already in the
+# base compose; this overlay just brings up the per-user Drive crawl
+# worker that drains rag.sync_jobs and uploads to RAGFlow.
+#
+# RAGFlow itself is NOT included — it's a separate upstream stack with
+# its own docker-compose. See deploy/RAG.md "Step 1 — Bring up
+# RAGFlow" for how to start it. The rag-api/rag-ingest containers
+# reach RAGFlow via host.docker.internal:9380 by default; override
+# RAGFLOW_BASE_URL in your .env if it lives elsewhere.
+
+services:
+  rag-ingest:
+    build:
+      context: ../apps/rag-api/ingest
+      dockerfile: Dockerfile
+    image: omega-rag-ingest:local
+    environment:
+      DATABASE_URL: postgresql://omega:omega@postgres:5432/omega
+      RAGFLOW_BASE_URL: ${RAGFLOW_BASE_URL:-http://host.docker.internal:9380}
+      RAGFLOW_API_KEY: ${RAGFLOW_API_KEY:-}
+      OAUTH_PROVIDER: ${OAUTH_PROVIDER:-env}
+      OAUTH_FALLBACK_USER_ID: ${OAUTH_FALLBACK_USER_ID:-}
+      GOOGLE_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
+      GOOGLE_DRIVE_REFRESH_TOKEN: ${GOOGLE_DRIVE_REFRESH_TOKEN:-}
+      CONTROLLER_BASE_URL: ${CONTROLLER_BASE_URL:-http://controller:3001}
+      CONTROLLER_SERVICE_TOKEN: ${CONTROLLER_SERVICE_TOKEN:-}
+      # Per-user crawl scope (added in v0.3.0). Per-user `my-ai/`
+      # folders are auto-discovered; the shared knowledge-base folder
+      # is operator-supplied.
+      RAG_PERSONAL_FOLDER_NAME: ${RAG_PERSONAL_FOLDER_NAME:-my-ai}
+      RAG_KNOWLEDGE_BASE_FOLDER_ID: ${RAG_KNOWLEDGE_BASE_FOLDER_ID:-}
+      DEFAULT_POLL_INTERVAL: ${RAG_POLL_INTERVAL:-900}
+      NODE_ENV: production
+    volumes:
+      # Same migrations bind-mount as rag-api so the worker boots
+      # against a schema-current database. The worker doesn't run
+      # migrations itself — rag-api does — but they share the file
+      # tree for build context cleanliness.
+      - ../apps/rag-api/migrations:/app/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  # Wire the chat side to talk to rag-api. These envs override the
+  # base compose's controller / pi-harness service definitions.
+  controller:
+    environment:
+      RAG_API_URL: ${RAG_API_URL:-http://rag-api:3100}
+      RAG_SERVICE_TOKEN: ${RAG_SERVICE_TOKEN:-}
