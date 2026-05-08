@@ -11,14 +11,16 @@ import { Activity as ActivityIcon, ChevronRight, ChevronLeft, Trash2 } from 'luc
 import { useHarnessSession } from '../lib/harness-session'
 import { LogStream } from './library/LogStream'
 import { cn } from '../lib/cn'
+import { readWithLegacyKey } from '../lib/storage'
 
-const COLLAPSED_KEY = '52l.chat.activityPanelCollapsed'
+const COLLAPSED_KEY = 'omega.chat.activityPanelCollapsed'
+const LEGACY_COLLAPSED_KEY = '52l.chat.activityPanelCollapsed'
 
 export function AgentActivityPanel() {
   const { activityLog, clearActivityLog } = useHarnessSession()
   const [collapsed, setCollapsed] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false
-    return window.localStorage.getItem(COLLAPSED_KEY) === '1'
+    return readWithLegacyKey(window.localStorage, COLLAPSED_KEY, LEGACY_COLLAPSED_KEY) === '1'
   })
 
   useEffect(() => {

@@ -23,9 +23,12 @@ import {
   type ReactNode,
 } from 'react'
 
+import { readWithLegacyKey } from './storage'
+
 const API_BASE = (import.meta.env.BASE_URL ?? '/').replace(/\/$/, '')
 const HEALTH_URL = `${API_BASE}/api/controller/api/oauth/google/health`
-const SKIP_KEY = '52l.chat.googleConnect.skipped'
+const SKIP_KEY = 'omega.chat.googleConnect.skipped'
+const LEGACY_SKIP_KEY = '52l.chat.googleConnect.skipped'
 
 export type GoogleStatusState =
   | { kind: 'loading' }
@@ -60,7 +63,7 @@ export function GoogleOAuthProvider({ children }: { children: ReactNode }) {
   const [skipped, setSkipped] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false
     try {
-      return window.sessionStorage.getItem(SKIP_KEY) === '1'
+      return readWithLegacyKey(window.sessionStorage, SKIP_KEY, LEGACY_SKIP_KEY) === '1'
     } catch {
       return false
     }

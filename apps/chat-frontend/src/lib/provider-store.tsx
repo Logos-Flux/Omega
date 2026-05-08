@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
+import { readWithLegacyKey } from './storage'
 
 export type ProviderId = 'anthropic' | 'google' | 'perplexity'
 export type Tier = 'basic' | 'advanced'
@@ -37,7 +38,8 @@ export function tierForModel(provider: ProviderId, model: string): Tier | null {
   return null
 }
 
-const STORAGE_KEY = '52l.chat.provider'
+const STORAGE_KEY = 'omega.chat.provider'
+const LEGACY_STORAGE_KEY = '52l.chat.provider'
 
 interface Selection {
   provider: ProviderId
@@ -53,7 +55,7 @@ interface SelectionContextValue extends Selection {
 function readStoredSelection(): Selection {
   if (typeof window === 'undefined') return { provider: DEFAULT_PROVIDER, tier: DEFAULT_TIER }
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY)
+    const raw = readWithLegacyKey(window.localStorage, STORAGE_KEY, LEGACY_STORAGE_KEY)
     if (!raw) return { provider: DEFAULT_PROVIDER, tier: DEFAULT_TIER }
     const parsed = JSON.parse(raw) as Partial<Selection>
     const provider = parsed.provider && parsed.provider in PROVIDERS ? parsed.provider : DEFAULT_PROVIDER
