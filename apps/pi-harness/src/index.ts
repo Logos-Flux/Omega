@@ -3,7 +3,7 @@ import { ensureWorkspace } from './workspace'
 import { run as runEngine } from './engine'
 import type { IncomingSend, Outgoing } from './types'
 import { readSkill, scanSkills } from './skills'
-import { listUploads, readUpload, saveUpload, uploadPath } from './uploads'
+import { deleteUpload, listUploads, readUpload, saveUpload, uploadPath } from './uploads'
 import { harnessJwtConfigured, tryVerify } from './jwt'
 import { readShimConfig, startGccliShim } from './gccli-shim'
 import { handleProfileRoute } from './profile-routes'
@@ -233,6 +233,23 @@ const server = Bun.serve<WSData, never>({
       }
     }
 
+    if (req.method === 'DELETE' && url.pathname.startsWith('/uploads/')) {
+      const rest = url.pathname.replace(/^\/uploads\//, '')
+      const slash = rest.indexOf('/')
+      if (slash === -1) {
+        return jsonCors({ error: 'expected /uploads/<sessionId>/<filename>' }, { status: 400 }, req)
+      }
+      const sessionId = rest.slice(0, slash)
+      const bad = requireSid(sessionId)
+      if (bad) return bad
+      const filename = decodeURIComponent(rest.slice(slash + 1))
+      try {
+        const removed = await deleteUpload(sessionId, filename)
+        return jsonCors({ ok: removed, filename }, undefined, req)
+      } catch (e) {
+        return jsonCors({ error: (e as Error).message }, { status: 400 }, req)
+      }
+    }
     if (req.method === 'POST' && url.pathname === '/uploads') {
       try {
         const form = await req.formData()

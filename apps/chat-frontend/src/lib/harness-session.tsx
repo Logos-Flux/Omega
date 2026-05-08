@@ -51,6 +51,9 @@ interface HarnessSessionContextValue {
   uploads: UploadInfo[]
   refreshUploads: () => Promise<UploadInfo[]>
   uploadFiles: (files: FileList | File[]) => Promise<void>
+  /** Remove a single upload by filename. Idempotent — a missing file
+   *  resolves cleanly so the UI doesn't have to track state precisely. */
+  deleteUpload: (filename: string) => Promise<void>
   uploadingCount: number
   /** Reactive skills list. */
   skills: SkillSummary[]
@@ -227,6 +230,28 @@ export function HarnessSessionProvider({
     [session, refreshUploads],
   )
 
+  const deleteUpload = useCallback(
+    async (filename: string): Promise<void> => {
+      if (!session) return
+      const url = `${session.container.url}/uploads/${encodeURIComponent(session.sessionId)}/${encodeURIComponent(filename)}`
+      try {
+        const r = await fetch(url, {
+          method: 'DELETE',
+          headers: { authorization: `Bearer ${session.token}` },
+        })
+        if (!r.ok) {
+          const txt = await r.text().catch(() => '')
+          setUploadError(`delete failed: ${r.status} ${txt}`)
+          return
+        }
+        await refreshUploads()
+      } catch (err) {
+        setUploadError(`delete failed: ${(err as Error).message}`)
+      }
+    },
+    [session, refreshUploads],
+  )
+
   const downloadUrlFor = useCallback(
     (filename: string) =>
       session
@@ -246,6 +271,7 @@ export function HarnessSessionProvider({
       uploads,
       refreshUploads,
       uploadFiles,
+      deleteUpload,
       uploadingCount,
       skills,
       downloadUrlFor,
@@ -260,6 +286,7 @@ export function HarnessSessionProvider({
       uploads,
       refreshUploads,
       uploadFiles,
+      deleteUpload,
       uploadingCount,
       skills,
       downloadUrlFor,
@@ -290,6 +317,7 @@ const EMPTY_HARNESS_SESSION: HarnessSessionContextValue = {
   uploads: [],
   refreshUploads: async () => [],
   uploadFiles: async () => {},
+  deleteUpload: async () => {},
   uploadingCount: 0,
   skills: [],
   downloadUrlFor: () => undefined,

@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, stat, unlink, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { workspaceRoot } from './memory'
@@ -71,6 +71,23 @@ export async function readUpload(sessionId: string, filename: string): Promise<s
 
 export function uploadPath(sessionId: string, filename: string): string {
   return join(uploadsDir(), safeSessionId(sessionId), safeFilename(filename))
+}
+
+// Remove a single upload by name. Returns true if the file existed and
+// was removed, false if it wasn't there. Path-safety mirrors saveUpload:
+// `safeSessionId` rejects invalid session ids; `safeFilename` strips
+// path components so a caller can't escape the session uploads dir.
+export async function deleteUpload(sessionId: string, filename: string): Promise<boolean> {
+  const sid = safeSessionId(sessionId)
+  const safe = safeFilename(filename)
+  const path = join(uploadsDir(), sid, safe)
+  try {
+    await unlink(path)
+    return true
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false
+    throw err
+  }
 }
 
 const TEXT_MAX = 250_000 // 250 KB cap for tool-side writes

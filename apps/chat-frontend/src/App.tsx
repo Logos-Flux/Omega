@@ -9,6 +9,7 @@ import { ChatDrawer } from './components/ChatDrawer'
 import { AgentModeBanner } from './components/AgentModeBanner'
 import { AgentActivityIndicator } from './components/AgentActivityIndicator'
 import { AgentActivityPanel } from './components/AgentActivityPanel'
+import { ChatDropZone } from './components/ChatDropZone'
 import { ProviderSelectionProvider, tierForModel, useProviderSelection, type ProviderId } from './lib/provider-store'
 import { AgentModeProvider, useAgentMode } from './lib/agent-mode'
 import { HarnessTransport } from './lib/harness-transport'
@@ -361,7 +362,7 @@ function ChatPageInner({
             />
           }
         >
-          <div className="flex h-full">
+          <ChatDropZone>
             <div className="flex min-w-0 flex-1 flex-col bg-t-deep">
               {/* Sprite warmup signal — visible regardless of agent mode so
                   users know the provisioning is running in the background
@@ -375,7 +376,7 @@ function ChatPageInner({
             </div>
             {/* Right-side Activity feed — only in agent mode, collapsible. */}
             {agentMode && <AgentActivityPanel />}
-          </div>
+          </ChatDropZone>
         </AppShell>
       </HarnessSessionProvider>
     </AssistantRuntimeProvider>

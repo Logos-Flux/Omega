@@ -9,6 +9,7 @@ import {
   FileText,
   User,
   BookMarked,
+  X,
 } from 'lucide-react'
 import { useThreadNav } from '../App'
 import { useAgentMode } from '../lib/agent-mode'
@@ -272,8 +273,9 @@ function Accordion({
 }
 
 function UploadsList() {
-  const { uploads, downloadUrlFor, session, uploadFiles, uploadingCount, uploadError } =
+  const { uploads, downloadUrlFor, session, uploadFiles, deleteUpload, uploadingCount, uploadError } =
     useHarnessSession()
+  const [pendingDelete, setPendingDelete] = useState<string | null>(null)
   if (!session) {
     return (
       <p className="text-[10px] text-white/30 px-1">
@@ -307,6 +309,15 @@ function UploadsList() {
         <ul className="space-y-1">
           {uploads.map((u) => {
             const href = downloadUrlFor(u.filename)
+            const isPending = pendingDelete === u.filename
+            const onDelete = async () => {
+              setPendingDelete(u.filename)
+              try {
+                await deleteUpload(u.filename)
+              } finally {
+                setPendingDelete(null)
+              }
+            }
             const inner = (
               <>
                 <FileText className="h-3 w-3 shrink-0" />
@@ -315,22 +326,35 @@ function UploadsList() {
               </>
             )
             return (
-              <li key={u.filename}>
+              <li
+                key={u.filename}
+                className="group flex items-stretch gap-1 rounded border border-white/10 bg-white/5 transition-colors hover:border-t-accent-alt/40"
+              >
                 {href ? (
                   <a
                     href={href}
                     target="_blank"
                     rel="noreferrer"
-                    className="flex w-full items-center gap-2 rounded border border-white/10 bg-white/5 px-2 py-1 text-[10px] text-white/70 transition-colors hover:border-t-accent-alt/40 hover:text-t-accent-alt"
+                    className="flex flex-1 items-center gap-2 px-2 py-1 text-[10px] text-white/70 transition-colors hover:text-t-accent-alt"
                     title={`${u.filename} (${u.size} bytes)`}
                   >
                     {inner}
                   </a>
                 ) : (
-                  <span className="flex w-full items-center gap-2 rounded border border-white/10 bg-white/5 px-2 py-1 text-[10px] text-white/70">
+                  <span className="flex flex-1 items-center gap-2 px-2 py-1 text-[10px] text-white/70">
                     {inner}
                   </span>
                 )}
+                <button
+                  type="button"
+                  onClick={onDelete}
+                  disabled={isPending}
+                  aria-label={`Remove ${u.filename}`}
+                  title={`Remove ${u.filename}`}
+                  className="flex shrink-0 items-center justify-center px-1.5 text-white/30 transition-colors hover:text-red-400 disabled:opacity-50"
+                >
+                  <X className="h-3 w-3" />
+                </button>
               </li>
             )
           })}
