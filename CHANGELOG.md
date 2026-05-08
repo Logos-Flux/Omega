@@ -5,6 +5,82 @@ All notable changes to Omega are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-05-08
+
+Frontend convergence + customization architecture. The OSS chat surface
+gets a real shell — top nav, drawer toggle, mobile-responsive layout,
+user dropdown — and a documented pattern for layering deployment-specific
+content on top without forking the codebase.
+
+### Added
+
+- **Polished `<AppShell>`** with top nav, drawer toggle, user dropdown,
+  and mobile-responsive layout. Replaces the prior 30-line stub. Brand
+  text + href + nav links + mega-menus are all data-driven props with
+  empty defaults — OSS deployments render brand-only nav, deployments
+  populate via `<AppShell links={...} menus={...}>` or a runtime
+  `navConfigUrl` fetch. New exports: `TopNav`, `useNavConfig`,
+  `BUNDLED_NAV_CONFIG`, plus the `AppId`/`NavLink`/`NavMenu`/
+  `MegaMenuItem` types.
+- **`themeUrl` prop on `<AppShell>`** — fetches a theme JSON
+  (`{ tokens: Record<string, string> }`) at runtime and applies the
+  values as CSS custom properties on `document.documentElement`. Lets a
+  deployment swap palettes without rebuilding the bundle. Token-name
+  allowlist + value length cap prevent malformed payloads from injecting
+  arbitrary CSS.
+- **Build-time brand env vars on chat-frontend.** `VITE_BRAND_NAME`
+  (default `Omega`) drives the wordmark in the top nav, page title, and
+  empty-state badge; `VITE_BRAND_GLYPH` (default `Ω`) drives the
+  assistant avatar and agent-mode banner. New `apps/chat-frontend/src/lib/brand.ts`
+  reads them once at module load.
+- **`<QuickActionsProvider>` for the chat empty state.** New
+  `apps/chat-frontend/src/lib/quick-actions.tsx` exposes a
+  Context+Provider+hook. Empty actions array as default — OSS empty
+  state is just headline + tagline + composer. Deployments populate
+  with a curated array of prompt cards + an `onSelect` handler.
+- **`AuthProvider`** now exposes `signOut()` + `refresh()` and a
+  `'loading'` status alongside the existing user/status surface.
+  Required by the new `UserMenu` dropdown and matches the canonical
+  shape needed for non-stub auth implementations.
+- **`docs/CUSTOMIZATION.md`** — codifies the customization architecture
+  forming through Phase 4: code goes upstream into Omega, configuration
+  as data goes in your deploy. Documents the four data-delivery
+  mechanisms (build-time env / runtime fetch / bind-mount JSON /
+  Provider wrap), the currently-configurable surfaces, and the
+  "wrap or contribute upstream, never fork" discipline.
+
+### Changed
+
+- The hardcoded `SUGGESTIONS` array on the chat empty state is gone.
+  The cards (Qualify Sales Leads / Market Research / etc.) were
+  prior-org placeholders that always rendered "Coming soon" toasts.
+  Replaced with the data-driven `<QuickActionsProvider>` above.
+- The chat-frontend's Tailwind `@source` directive now scans
+  `@omega-inc/app-shell/src/**/*.{ts,tsx}` instead of a non-existent
+  `dist/**/*.js`. Without this, utility classes used inside the shell
+  package (drawer responsive layout, dropdown positioning, etc.)
+  weren't getting compiled, which caused the drawer to render as a
+  fixed bottom overlay instead of the responsive left aside.
+
+### Fixed
+
+- localStorage / sessionStorage keys renamed from the prior-org
+  namespace `52l.chat.*` to `omega.chat.*`. Three sites:
+  `provider-store` (selected provider/tier), `AgentActivityPanel`
+  (panel open/closed), and `google-oauth` (skip-for-session flag).
+  New `apps/chat-frontend/src/lib/storage.ts` adds a
+  `readWithLegacyKey()` migration helper so existing users (notably
+  Helsinki on prior versions) keep their preferences instead of
+  resetting on the first load after the rename.
+- `packages/shell/src/styles.css` was an empty placeholder that
+  emitted nothing. Ported the canonical design-token block (Tailwind
+  v4 `@theme` + `:root` CSS vars + a small set of `.t-*` utilities
+  and scrollbar styling). Without this, every `bg-t-bright` /
+  `text-t-text` / `border-t-border` class on the shell components
+  emitted no CSS — drawer rendered with transparent backgrounds, user
+  menu dropdown was invisible. Light theme, navy accent. Operators
+  override any `--color-t-*` in `:root` after the `@import`.
+
 ## [0.4.2] - 2026-05-08
 
 User-facing affordances for files in chat. The "Add file" button in
