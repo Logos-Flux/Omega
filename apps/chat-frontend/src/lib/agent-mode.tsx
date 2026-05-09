@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import { useSpriteWarmup } from './sprite-warmup'
+import { readWithLegacyKey } from './storage'
 
 // Agent Mode = the harness-backed runtime (Pi-harness inside a Sprite).
 // Toggle ON (default) routes through the harness transport; OFF falls back
@@ -20,6 +21,11 @@ import { useSpriteWarmup } from './sprite-warmup'
 // chat-api while the sprite is being prepared.
 
 const STORAGE_KEY = 'omega.chat.agentMode'
+// Legacy key for the v0.5.0 namespace rename. Migrated on first read so a
+// user who explicitly toggled agent mode OFF in a prior 52l.chat.* build
+// keeps that preference instead of being silently flipped back to the ON
+// default after the rename. Idempotent — see lib/storage.ts.
+const LEGACY_STORAGE_KEY = '52l.chat.agentMode'
 const DEFAULT_AGENT_MODE = true
 
 interface AgentModeContextValue {
@@ -31,7 +37,7 @@ interface AgentModeContextValue {
 function readStored(): boolean {
   if (typeof window === 'undefined') return DEFAULT_AGENT_MODE
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY)
+    const raw = readWithLegacyKey(window.localStorage, STORAGE_KEY, LEGACY_STORAGE_KEY)
     if (raw === null) return DEFAULT_AGENT_MODE
     return raw === 'true'
   } catch {
