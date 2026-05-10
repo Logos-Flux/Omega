@@ -5,6 +5,142 @@ All notable changes to Omega are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-05-10
+
+Filesystem RAG source + deploy plumbing envs. Self-hosted Omega deploys
+(Helsinki, local dev) can now run RAG without per-user Google Drive
+OAuth — they bind-mount a host directory and the ingest worker walks
+it. Drive mode remains the default; existing deploys are unaffected by
+the upgrade. The chat-frontend's Connectors pane adapts to whichever
+mode the deploy picks via a new `/api/rag/source` probe.
+
+In parallel, four optional build-time envs on `apps/chat-frontend` let
+a deploy mount the SPA under a sub-path, point auth at a different
+origin, wire Cloudflare Access logout, and (in dev) skip the `/api/me`
+probe — closing the gap that previously forced 52L to ship a wrapper
+App in its deploy repo. Three remaining hardcoded `Omega` strings in
+chat-frontend components now read from `brand.name` so
+`VITE_BRAND_NAME` controls every wordmark.
+
+### Added
+
+- **`RAG_SOURCE` env on `rag-api`** picks the ingest source: `drive`
+  (default, unchanged behavior) or `filesystem` (new). A small
+  `RagSource` interface in `apps/rag-api/ingest/src/source.ts` hides
+  the source-specific logic from the rest of the crawler; lazy import
+  via `pickSource()` means a filesystem-only deploy doesn't pay the
+  googleapis startup cost.
+- **`apps/rag-api/ingest/src/filesystem.ts`** — recursive directory
+  walker with hardened safety rails: never follows symlinks (lstat
+  check before opening), skips dotfiles, bounded walk depth (default
+  16, `RAG_FILESYSTEM_MAX_DEPTH` override), resolves mime via
+  extension lookup (no octet-stream guesses), per-file try/catch so a
+  permission error doesn't kill the run. Path resolution on download
+  rejects absolute ids and `..` escapes.
+- **`apps/rag-api/migrations/0004_filesystem_source.sql`** — adds
+  `source_kind` + `source_id` columns to `rag.files`, backfills drive
+  rows (`source_kind='drive'`, `source_id=gdrive_file_id`), new unique
+  index on `(tenant_id, source_kind, source_id)`. Relaxes
+  `gdrive_file_id` to nullable so filesystem rows don't fake one. Adds
+  `filesystem_status` to `rag.users` (analogous to
+  `gdrive_my_ai_status`).
+- **`GET /api/rag/source` on the controller** — ungated like
+  `/enabled`. Returns `{ mode, features: { oauth, manual_ingest,
+  shared_folder } }` so the chat-frontend can pick a Connectors-pane
+  state machine on first paint. `features.oauth` is forced `false` in
+  filesystem mode regardless of `ENABLE_GOOGLE_OAUTH`, so a stale
+  frontend tab can't render Connect-Drive after a mode flip.
+- **`apps/rag-api/api/src/routes/v1/users.ts` `/status` extension** —
+  when `RAG_SOURCE=filesystem`, the response also carries
+  `filesystem_status`, `filesystem_file_count`,
+  `filesystem_last_walk_ts`. Drive-mode payloads are bit-identical to
+  v0.5.x.
+- **`<RAGSourceCard>` adaptive Connectors component** — replaces the
+  v0.5.x drive-only `<DriveConnectCard>`. Dispatches to
+  `<DriveConnectPane>` (renamed from `DriveConnectCard`, behavior
+  unchanged) or `<FilesystemPane>` (new state machine:
+  `loading → error | missing | empty | syncing | synced`) based on
+  `/api/rag/source`. The actual filesystem path is **never rendered**
+  in the UI — only counts and a "configured ✓" indicator.
+- **`deploy/docker-compose.fs-rag.yml`** — new compose overlay. Layers
+  on top of `docker-compose.{yml,rag.yml}` to flip the stack to
+  filesystem mode and bind-mount `${RAG_FILES_HOST_DIR:-./rag-files}`
+  read-only into rag-api and rag-ingest. Default host dir is
+  `./rag-files` so a fresh clone "just works" — drop files into
+  `deploy/rag-files/` and they get indexed.
+- **`deploy/RAG.md` § "Filesystem source"** — full operator runbook:
+  when to pick filesystem mode, layout + safety rails, compose
+  wiring example, scp/sftp upload workflow with the recommended
+  `omega-uploader` chrooted-sftp setup, status field reference, and a
+  drive→filesystem migration recipe with the SQL to GC orphan drive
+  rows.
+- **Four chat-frontend deploy-plumbing envs** wired through
+  `<App>` → `<AuthProvider>` props. All optional; defaults match a
+  root-mounted SPA on the same origin as its API with no Cloudflare
+  Access in front:
+  - `VITE_BASE_PATH` — Vite `base` (SPA mount path, e.g. `/chat/`).
+  - `VITE_API_BASE` — URL prefix `<AuthProvider>` uses for `/api/me`;
+    decouples API path from SPA mount path.
+  - `VITE_CF_ACCESS_TEAM_DOMAIN` — CF Access team domain; `signOut()`
+    hits its `/cdn-cgi/access/logout`.
+  - `VITE_DEV_FAKE_USER` — JSON-encoded `SessionUser` for local dev
+    without a controller. **Dev-only** — production builds (where
+    `import.meta.env.DEV` is false) ignore the env even if set.
+- **`brand.name` in three remaining components.** `SignInScreen` badge,
+  `ConnectGoogleScreen` badge, and `ChatDrawer` header now read from
+  `brand.name` so `VITE_BRAND_NAME` controls every wordmark in the
+  chat-frontend. No hardcoded `Omega` strings left.
+
+### Changed
+
+- **`apps/rag-api/ingest/src/crawler.ts`** is now source-agnostic. The
+  Drive-specific `my-ai/` folder resolution + the deprecated
+  `RAG_FOLDER_ALLOWLIST` fallback moved out of `crawler.ts` into
+  `drive-source.ts`. Per-file dispatch goes through the `RagSource`
+  interface. `rag.files` lookups now key on
+  `(tenant_id, source_kind, source_id)` instead of
+  `(tenant_id, gdrive_file_id)`. Cross-source bookkeeping (e.g.
+  dropping `user_file_access` rows on a vanished file) is scoped to
+  `source.kind` so a single-source crawl doesn't prune the other
+  source's rows during a migration window.
+- **`isIngestable` allowlist extracted** to
+  `apps/rag-api/ingest/src/mime.ts`. Both Drive and filesystem sources
+  share the same gate. `mime.ts` also exports a small extension-to-
+  mime resolver used by the filesystem walker.
+- **`<AppShell>` Connectors section** now embeds `<RAGSourceCard>`
+  instead of `<DriveConnectCard>`. The old component is gone (renamed
+  to `<DriveConnectPane>` and pulled into the card as the drive-mode
+  body); the rendered DOM in drive mode is unchanged.
+
+### Migration notes for existing deploys
+
+- **`RAG_SOURCE` defaults to `drive`.** Existing 52L / Helsinki / OSS
+  deploys keep the v0.5.x flow without a config change.
+- **Migration 0004 runs on `rag-api` boot.** Non-destructive but
+  irreversible: backfills `source_id` from `gdrive_file_id`, then
+  relaxes `gdrive_file_id` to nullable. Safe on prod tables of any
+  size we've seen (~thousands of rows).
+- **`RAG_SOURCE=both` is explicitly rejected** at the worker. Reserved
+  for a future release once cross-source dedup semantics are pinned.
+- Drive-mode `/status` payload is bit-identical to v0.5.x; filesystem
+  fields are omitted (not set to null) in drive mode.
+
+## [0.5.1] - 2026-05-09
+
+Bug fix: chat-frontend silently lost agent-mode state for users
+upgrading from a 52L-built bundle that wrote the
+`52l.chat.agentMode` localStorage key. v0.5.0 renamed the key prefix
+to `omega.chat.*` but didn't carry forward existing values; a user
+who had agent mode enabled would see it reset on first load.
+
+### Fixed
+
+- **`apps/chat-frontend/src/lib/agent-mode.ts`** migrates legacy
+  `52l.chat.agentMode` localStorage entries into the new
+  `omega.chat.agentMode` key on first read, then drops the legacy
+  copy. Idempotent; tolerates missing values; safe in browsers without
+  localStorage (SSR / private-tab paths).
+
 ## [0.5.0] - 2026-05-08
 
 Frontend convergence + customization architecture. The OSS chat surface
