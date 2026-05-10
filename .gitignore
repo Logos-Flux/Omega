@@ -18,3 +18,6 @@ deploy/.env
 # Internal release-process docs (not part of the public release)
 RELEASE_CHECKLIST.md
 RELEASE_CHECKLIST_OMEGA.md
+
+# Internal planning / handoff docs (private; not part of the public release)
+dev-docs/
