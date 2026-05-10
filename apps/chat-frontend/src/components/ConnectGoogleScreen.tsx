@@ -13,6 +13,7 @@
 // clears on tab close — there's no persistent bypass.
 
 import { useGoogleOAuth, buildOAuthStartUrl } from '../lib/google-oauth'
+import { brand } from '../lib/brand'
 
 export function ConnectGoogleScreen() {
   const { skipForSession } = useGoogleOAuth()
@@ -25,7 +26,7 @@ export function ConnectGoogleScreen() {
     <main className="flex min-h-screen items-center justify-center bg-t-deep t-bg-pattern px-4">
       <div className="t-card w-full max-w-md p-8">
         <div className="mb-3 inline-block px-3 py-1 text-[10px] font-display uppercase tracking-[0.2em] text-t-accent border border-t-accent/40 rounded">
-          Omega
+          {brand.name}
         </div>
         <h1 className="mb-3 font-display text-2xl font-semibold text-t-bright">
           Connect your Google account

@@ -3,7 +3,7 @@ import { AssistantRuntimeProvider } from '@assistant-ui/react'
 import { useChatRuntime, AssistantChatTransport } from '@assistant-ui/react-ai-sdk'
 import type { ChatTransport, UIMessage } from 'ai'
 import { Thread } from './components/assistant-ui/thread'
-import { AppShell, AuthProvider, UserMenu, useAuth } from '@omega-inc/app-shell'
+import { AppShell, AuthProvider, UserMenu, useAuth, type SessionUser } from '@omega-inc/app-shell'
 import { SignInScreen } from './components/SignInScreen'
 import { ChatDrawer } from './components/ChatDrawer'
 import { AgentModeBanner } from './components/AgentModeBanner'
@@ -22,6 +22,39 @@ import { SpriteWarmupProvider } from './lib/sprite-warmup'
 import { SpriteWarmupBanner } from './components/SpriteWarmupBanner'
 
 const API_BASE = (import.meta.env.BASE_URL ?? '/').replace(/\/$/, '')
+
+// Auth-plumbing envs forwarded to <AuthProvider>. Empty / unset gives the
+// OSS default behavior (same-origin /api/me, no CF Access logout, no fake
+// user). Operators set these at build time per docs/CUSTOMIZATION.md.
+//
+//   VITE_API_BASE              — explicit URL prefix for /api/me; useful
+//                                when SPA mount path differs from API
+//                                mount path (e.g. SPA at /chat/, API at
+//                                /api/). Empty string = same-origin, no
+//                                prefix. Unset falls back to BASE_URL.
+//   VITE_CF_ACCESS_TEAM_DOMAIN — Cloudflare Access team domain; signOut()
+//                                hits its /cdn-cgi/access/logout.
+//   VITE_DEV_FAKE_USER         — JSON-encoded SessionUser for local dev
+//                                without a controller. Honored only in
+//                                dev builds (import.meta.env.DEV).
+const RAW_VITE_API_BASE = import.meta.env.VITE_API_BASE as string | undefined
+const AUTH_API_BASE =
+  RAW_VITE_API_BASE !== undefined ? RAW_VITE_API_BASE.replace(/\/$/, '') : API_BASE
+const CF_ACCESS_TEAM_DOMAIN =
+  (import.meta.env.VITE_CF_ACCESS_TEAM_DOMAIN as string | undefined)?.trim() || undefined
+
+function readDevFakeUser(): SessionUser | undefined {
+  if (!import.meta.env.DEV) return undefined
+  const raw = (import.meta.env.VITE_DEV_FAKE_USER as string | undefined)?.trim()
+  if (!raw) return undefined
+  try {
+    return JSON.parse(raw) as SessionUser
+  } catch (err) {
+    console.warn('[chat-frontend] VITE_DEV_FAKE_USER set but not valid JSON; ignoring', err)
+    return undefined
+  }
+}
+const DEV_FAKE_USER = readDevFakeUser()
 
 export interface ThreadInfo {
   id: string
@@ -54,7 +87,11 @@ export function useThreadNav(): ThreadNavValue {
 // auth, Tailscale serve, etc.); see packages/shell/src/AuthProvider.tsx.
 export function App() {
   return (
-    <AuthProvider>
+    <AuthProvider
+      apiBase={AUTH_API_BASE}
+      cfAccessTeamDomain={CF_ACCESS_TEAM_DOMAIN}
+      fakeUser={DEV_FAKE_USER}
+    >
       <AppShellRouter />
     </AuthProvider>
   )

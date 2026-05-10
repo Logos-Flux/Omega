@@ -107,6 +107,32 @@ rebuilding the frontend is required to change them.
 The top-nav uses the same value automatically (`<AppShell brandText={brand.name}>`
 in `App.tsx`).
 
+### Deploy plumbing
+
+Build-time envs on `apps/chat-frontend` that adapt the SPA to a deploy's
+edge / auth setup without forking. All optional — defaults match a
+root-mounted SPA on the same origin as its API, with no Cloudflare Access
+in front.
+
+| Env | What it does | Default |
+|---|---|---|
+| `VITE_BASE_PATH` | Vite `base` — SPA mount path. Set to `/chat/` to serve at `https://example.com/chat/`. Trailing slash required. | `/` |
+| `VITE_API_BASE` | URL prefix `<AuthProvider>` uses for `/api/me`. Empty string forces same-origin no-prefix even when the SPA is mounted under a sub-path. Unset falls back to the SPA mount path. | unset → SPA mount path |
+| `VITE_CF_ACCESS_TEAM_DOMAIN` | Cloudflare Access team domain (e.g. `https://example.cloudflareaccess.com`). Used by `signOut()` to clear the CF session via `/cdn-cgi/access/logout`. | unset → `signOut()` just reloads |
+| `VITE_DEV_FAKE_USER` | JSON-encoded `SessionUser`; `<AuthProvider>` skips `/api/me` and authenticates as this user. **Honored only in dev builds** (`import.meta.env.DEV`); production builds ignore it. | unset |
+
+Typical mappings:
+
+- **OSS dev**: leave all unset; `bun run dev` proxies `/api/*` to a
+  local chat-api on port 3000.
+- **Single-host deploy** (Helsinki-style): leave all unset; the edge
+  serves SPA + API on the same origin.
+- **Sub-path deploy** (e.g. `chat.example.com/chat/`): set
+  `VITE_BASE_PATH=/chat/`. Set `VITE_API_BASE=` (empty) when the API
+  is mounted at `/api/*` (not `/chat/api/*`).
+- **Behind Cloudflare Access**: set `VITE_CF_ACCESS_TEAM_DOMAIN` so the
+  user-menu sign-out actually clears the session.
+
 ### Theme
 
 Override any `--color-t-*` variable in `:root` after the app-shell

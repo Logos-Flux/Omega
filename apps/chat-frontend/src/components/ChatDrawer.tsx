@@ -15,6 +15,7 @@ import { useThreadNav } from '../App'
 import { useAgentMode } from '../lib/agent-mode'
 import { useHarnessSession } from '../lib/harness-session'
 import { formatBytes } from '../lib/harness-utils'
+import { brand } from '../lib/brand'
 import { cn } from '../lib/cn'
 
 type DrawerSection = 'chat' | 'uploads' | 'skills' | 'persona' | 'memories'
@@ -30,7 +31,7 @@ export function ChatDrawer() {
     <div className="flex h-full flex-col bg-t-bright text-white">
       <div className="border-b border-white/10 px-4 py-4">
         <p className="text-[10px] font-medium uppercase tracking-wider text-t-accent-alt">
-          Omega
+          {brand.name}
         </p>
         <p className="text-[10px] text-white/40 mt-0.5">
           {agentMode ? 'Agent Mode — Pi harness via Sprites' : 'Workspace'}
