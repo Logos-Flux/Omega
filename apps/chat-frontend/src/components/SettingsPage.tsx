@@ -28,7 +28,7 @@ import {
   type Profile,
   type ProfileProposal,
 } from '../lib/harness-api'
-import { DriveConnectCard } from './DriveConnectCard'
+import { RAGSourceCard } from './RAGSourceCard'
 
 // ---------- Section nav ---------------------------------------------------
 
@@ -211,8 +211,10 @@ function StubSection({ sectionId }: { sectionId: SectionId }) {
 
 // ---------- Connectors section --------------------------------------------
 //
-// Single concrete connector for now (Drive via the rag-api wrapper).
-// Future connectors (Slack, Notion, Linear, etc.) drop in here.
+// Single concrete connector for now — the RAG ingest source. Drive vs
+// filesystem mode is picked from the deploy's RAG_SOURCE env via
+// /api/rag/source; the card adapts accordingly. Future connectors
+// (Slack, Notion, Linear, etc.) drop in alongside.
 
 function ConnectorsSection() {
   return (
@@ -225,7 +227,7 @@ function ConnectorsSection() {
           Wire external content into the assistant.
         </p>
       </header>
-      <DriveConnectCard />
+      <RAGSourceCard />
     </section>
   )
 }

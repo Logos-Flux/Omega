@@ -1,12 +1,10 @@
-// Connect-Drive UX. Lives in Settings → Connectors. Self-gates on
-// /api/rag/enabled, so OSS deployments without a RAG backend hide the
-// card entirely (no broken-looking "rag-api unreachable" placeholder).
+// Drive-mode Connectors pane. Body of <RAGSourceCard> when
+// mode === 'drive'. Self-fetches /api/rag/status; the parent has
+// already resolved /api/rag/enabled and /api/rag/source for us.
 //
 // State machine:
 //
-//   loading-flag       → spinner while we wait on /api/rag/enabled
-//   disabled           → nothing rendered (operator hasn't wired RAG)
-//   loading-status     → spinner under the card while we fetch /status
+//   loading-status     → spinner under the card header
 //   error              → 4xx/5xx from /status; show + Retry
 //   needs-folder       → my_ai_folder_status === 'missing'; instructions
 //                        to create the folder + Retry
@@ -21,7 +19,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   forgetRag,
-  getRagEnabled,
   getRagStatus,
   triggerRagSync,
   type RagStatus,
@@ -30,8 +27,6 @@ import {
 const POLL_INTERVAL_MS = 3000
 
 type ViewState =
-  | { kind: 'loading-flag' }
-  | { kind: 'disabled' }
   | { kind: 'loading-status' }
   | { kind: 'error'; message: string }
   | { kind: 'needs-folder'; status: RagStatus }
@@ -39,7 +34,7 @@ type ViewState =
   | { kind: 'syncing'; status: RagStatus }
   | { kind: 'synced'; status: RagStatus }
 
-function deriveView(status: RagStatus): Exclude<ViewState, { kind: 'loading-flag' | 'disabled' | 'loading-status' | 'error' }> {
+function deriveView(status: RagStatus): Exclude<ViewState, { kind: 'loading-status' | 'error' }> {
   if (status.my_ai_folder_status === 'missing') return { kind: 'needs-folder', status }
   if (status.in_flight_job_id) return { kind: 'syncing', status }
   if (!status.last_synced_at) return { kind: 'never-synced', status }
@@ -59,8 +54,8 @@ function formatRelative(iso: string): string {
   return `${days}d ago`
 }
 
-export function DriveConnectCard() {
-  const [view, setView] = useState<ViewState>({ kind: 'loading-flag' })
+export function DriveConnectPane() {
+  const [view, setView] = useState<ViewState>({ kind: 'loading-status' })
   const [busy, setBusy] = useState(false)
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const cancelled = useRef(false)
@@ -70,7 +65,6 @@ export function DriveConnectCard() {
       const status = await getRagStatus()
       if (cancelled.current) return
       setView(deriveView(status))
-      // Schedule another poll while a job is in flight.
       if (status.in_flight_job_id) {
         pollTimer.current = setTimeout(() => {
           if (!cancelled.current) void refresh()
@@ -84,16 +78,7 @@ export function DriveConnectCard() {
 
   useEffect(() => {
     cancelled.current = false
-    void (async () => {
-      const enabled = await getRagEnabled()
-      if (cancelled.current) return
-      if (!enabled) {
-        setView({ kind: 'disabled' })
-        return
-      }
-      setView({ kind: 'loading-status' })
-      await refresh()
-    })()
+    void refresh()
     return () => {
       cancelled.current = true
       if (pollTimer.current) clearTimeout(pollTimer.current)
@@ -125,45 +110,22 @@ export function DriveConnectCard() {
     }
   }, [refresh])
 
-  if (view.kind === 'disabled') return null
-  if (view.kind === 'loading-flag') return null
-
-  return (
-    <section className="rounded border border-t-border bg-t-surface p-5">
-      <header className="mb-3">
-        <h2 className="font-display text-lg text-t-bright">Google Drive</h2>
-        <p className="mt-1 text-sm text-t-muted">
-          Index your <code className="rounded bg-t-deep px-1 py-0.5 font-mono text-xs">my-ai/</code> Drive folder
-          (and any shared knowledge base your operator has configured) so the
-          assistant can cite from it.
-        </p>
-      </header>
-
-      {view.kind === 'loading-status' && (
-        <p className="text-sm text-t-muted">Loading…</p>
-      )}
-
-      {view.kind === 'error' && (
-        <ErrorPane message={view.message} onRetry={() => void refresh()} />
-      )}
-
-      {view.kind === 'needs-folder' && (
-        <NeedsFolderPane onRetry={() => void refresh()} busy={busy} />
-      )}
-
-      {view.kind === 'never-synced' && (
-        <NeverSyncedPane onSync={onSync} busy={busy} />
-      )}
-
-      {view.kind === 'syncing' && (
-        <SyncingPane status={view.status} />
-      )}
-
-      {view.kind === 'synced' && (
-        <SyncedPane status={view.status} onSync={onSync} onForget={onForget} busy={busy} />
-      )}
-    </section>
-  )
+  if (view.kind === 'loading-status') {
+    return <p className="text-sm text-t-muted">Loading…</p>
+  }
+  if (view.kind === 'error') {
+    return <ErrorPane message={view.message} onRetry={() => void refresh()} />
+  }
+  if (view.kind === 'needs-folder') {
+    return <NeedsFolderPane onRetry={() => void refresh()} busy={busy} />
+  }
+  if (view.kind === 'never-synced') {
+    return <NeverSyncedPane onSync={onSync} busy={busy} />
+  }
+  if (view.kind === 'syncing') {
+    return <SyncingPane status={view.status} />
+  }
+  return <SyncedPane status={view.status} onSync={onSync} onForget={onForget} busy={busy} />
 }
 
 // ---------- Sub-panes ------------------------------------------------------

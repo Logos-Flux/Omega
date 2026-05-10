@@ -23,6 +23,30 @@ export interface RagStatus {
   drive_oauth_status: 'pending' | 'ok' | 'failed' | string
   /** Whether the user's personal `my-ai/` folder has been resolved. */
   my_ai_folder_status: 'unknown' | 'present' | 'missing'
+  // The four fields below are present only when the deploy is in
+  // filesystem mode (RAG_SOURCE=filesystem). In drive mode the API
+  // omits them entirely so the v0.5.x payload shape is unchanged.
+  /** v0.6.x — filesystem subdir readiness. Mirrors the schema column. */
+  filesystem_status?: 'unknown' | 'present' | 'missing'
+  /** v0.6.x — count of filesystem-source files visible to this user. */
+  filesystem_file_count?: number
+  /** v0.6.x — most recent finished filesystem-source crawl. */
+  filesystem_last_walk_ts?: string | null
+}
+
+export interface RagSourceInfo {
+  /** Which source the active deploy crawls. */
+  mode: 'drive' | 'filesystem'
+  /** Capability bundle the chat UI uses to gate sub-features. */
+  features: {
+    /** True iff this controller has Drive OAuth mounted AND mode='drive'. */
+    oauth: boolean
+    /** Whether a user can hit "Sync now" (audit-logged on the backend). */
+    manual_ingest: boolean
+    /** Whether the deploy has a shared content surface (KB folder /
+     *  flat filesystem dir). */
+    shared_folder: boolean
+  }
 }
 
 export interface SyncResponse {
@@ -70,6 +94,14 @@ export async function getRagEnabled(): Promise<boolean> {
     // UX is the same (hide the card).
     return false
   }
+}
+
+/** GET /api/rag/source — feature-flag-style probe. Reachable without a
+ *  session, like /enabled. Tells the chat-frontend which Connectors
+ *  pane to render and which sub-features (oauth / shared folder) the
+ *  deploy has wired up. */
+export async function getRagSource(): Promise<RagSourceInfo> {
+  return jsonFetch<RagSourceInfo>('/api/rag/source')
 }
 
 /** GET /api/rag/status — fetches the current sync state for the
