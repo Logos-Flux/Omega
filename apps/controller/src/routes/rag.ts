@@ -20,11 +20,24 @@
 //
 // All forward to rag-api's `/api/v1/users/*` shape, replacing the
 // session user's id for the `user_id` field/path.
+//
+//   GET  /api/rag/source             — feature-flag-style probe so the
+//                                      chat-frontend can pick the right
+//                                      Connectors-pane state machine
+//                                      (drive vs filesystem) without
+//                                      round-tripping rag-api.
 
 import { Hono } from 'hono'
 import type { MiddlewareHandler } from 'hono'
 import { requireSession } from '../middleware/session'
-import { getRagConfig, isRagEnabled, type RagConfig } from '../lib/rag-config'
+import {
+  getRagConfig,
+  getRagSourceMode,
+  hasSharedFolder,
+  isOAuthEnabled,
+  isRagEnabled,
+  type RagConfig,
+} from '../lib/rag-config'
 
 declare module 'hono' {
   interface ContextVariableMap {
@@ -46,6 +59,29 @@ export const ragRoutes = new Hono()
 // disclosure (whether the operator has wired up RAG); not worth a
 // session round-trip.
 ragRoutes.get('/enabled', (c) => c.json({ enabled: isRagEnabled() }))
+
+// /source — also ungated. Returns the source mode + a small `features`
+// bundle the chat-frontend uses to pick a state machine. Always safe to
+// call; values reflect controller-side env state. The rag-ingest worker
+// must be configured with the same RAG_SOURCE value (see deploy/RAG.md).
+ragRoutes.get('/source', (c) =>
+  c.json({
+    mode: getRagSourceMode(),
+    features: {
+      // Drive OAuth UX should render iff this controller has OAuth
+      // mounted AND we're in drive mode. In filesystem mode, false
+      // regardless of ENABLE_GOOGLE_OAUTH so a stale frontend tab
+      // doesn't render the Connect-Drive button after a mode flip.
+      oauth: isOAuthEnabled(),
+      // User-triggerable "Sync now" button. Always allowed for v0.6.x
+      // (matches Drive UX). The worker audit-logs each trigger.
+      manual_ingest: true,
+      // Whether the deploy has a shared content surface (KB folder /
+      // flat filesystem dir).
+      shared_folder: hasSharedFolder(),
+    },
+  }),
+)
 
 // Forward an arbitrary rag-api response back to the browser. We don't
 // massage the body — rag-api already returns the JSON shape the

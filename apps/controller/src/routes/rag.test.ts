@@ -52,6 +52,9 @@ const { _resetWarnLatchForTests } = await import('../lib/rag-config')
 const ORIGINAL_FETCH = globalThis.fetch
 const ORIGINAL_API_URL = process.env.RAG_API_URL
 const ORIGINAL_TOKEN = process.env.RAG_SERVICE_TOKEN
+const ORIGINAL_RAG_SOURCE = process.env.RAG_SOURCE
+const ORIGINAL_OAUTH_ENABLED = process.env.ENABLE_GOOGLE_OAUTH
+const ORIGINAL_KB_FOLDER = process.env.RAG_KNOWLEDGE_BASE_FOLDER_ID
 
 interface FetchCall {
   url: string
@@ -70,6 +73,9 @@ function stubFetch(response: Response): FetchCall[] {
 beforeEach(() => {
   delete process.env.RAG_API_URL
   delete process.env.RAG_SERVICE_TOKEN
+  delete process.env.RAG_SOURCE
+  delete process.env.ENABLE_GOOGLE_OAUTH
+  delete process.env.RAG_KNOWLEDGE_BASE_FOLDER_ID
   _resetWarnLatchForTests()
   mockPool.query.mockReset()
   mockPool.query.mockImplementation(async () => ({ rows: [], rowCount: 0 }))
@@ -81,6 +87,12 @@ afterEach(() => {
   else process.env.RAG_API_URL = ORIGINAL_API_URL
   if (ORIGINAL_TOKEN === undefined) delete process.env.RAG_SERVICE_TOKEN
   else process.env.RAG_SERVICE_TOKEN = ORIGINAL_TOKEN
+  if (ORIGINAL_RAG_SOURCE === undefined) delete process.env.RAG_SOURCE
+  else process.env.RAG_SOURCE = ORIGINAL_RAG_SOURCE
+  if (ORIGINAL_OAUTH_ENABLED === undefined) delete process.env.ENABLE_GOOGLE_OAUTH
+  else process.env.ENABLE_GOOGLE_OAUTH = ORIGINAL_OAUTH_ENABLED
+  if (ORIGINAL_KB_FOLDER === undefined) delete process.env.RAG_KNOWLEDGE_BASE_FOLDER_ID
+  else process.env.RAG_KNOWLEDGE_BASE_FOLDER_ID = ORIGINAL_KB_FOLDER
 })
 
 function makeApp() {
@@ -103,6 +115,74 @@ describe('GET /api/rag/enabled', () => {
     const app = makeApp()
     const res = await app.request('/api/rag/enabled')
     expect(await res.json()).toEqual({ enabled: true })
+  })
+})
+
+describe('GET /api/rag/source', () => {
+  it('defaults to drive mode with all features off when nothing is set', async () => {
+    const app = makeApp()
+    const res = await app.request('/api/rag/source')
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({
+      mode: 'drive',
+      features: { oauth: false, manual_ingest: true, shared_folder: false },
+    })
+  })
+
+  it('reports drive mode with oauth=true when ENABLE_GOOGLE_OAUTH=true', async () => {
+    process.env.RAG_SOURCE = 'drive'
+    process.env.ENABLE_GOOGLE_OAUTH = 'true'
+    const app = makeApp()
+    const res = await app.request('/api/rag/source')
+    expect(await res.json()).toMatchObject({
+      mode: 'drive',
+      features: { oauth: true },
+    })
+  })
+
+  it('reports shared_folder=true in drive mode when RAG_KNOWLEDGE_BASE_FOLDER_ID is set', async () => {
+    process.env.RAG_SOURCE = 'drive'
+    process.env.RAG_KNOWLEDGE_BASE_FOLDER_ID = 'folder-abc'
+    const app = makeApp()
+    const res = await app.request('/api/rag/source')
+    expect(await res.json()).toMatchObject({
+      mode: 'drive',
+      features: { shared_folder: true },
+    })
+  })
+
+  it('reports filesystem mode with oauth=false even when ENABLE_GOOGLE_OAUTH=true', async () => {
+    // In filesystem mode the OAuth env should be ignored — a stale tab
+    // could otherwise still render the Connect-Drive button after an
+    // operator flips RAG_SOURCE. shared_folder is implicitly true under
+    // the v0.6.0 flat layout.
+    process.env.RAG_SOURCE = 'filesystem'
+    process.env.ENABLE_GOOGLE_OAUTH = 'true'
+    const app = makeApp()
+    const res = await app.request('/api/rag/source')
+    expect(await res.json()).toEqual({
+      mode: 'filesystem',
+      features: { oauth: false, manual_ingest: true, shared_folder: true },
+    })
+  })
+
+  it('falls back to drive mode for unknown RAG_SOURCE values', async () => {
+    // Typo'd values shouldn't take down the controller. The misconfig
+    // surfaces as a one-shot warning in stderr (not asserted here);
+    // request handling stays on the conservative path.
+    process.env.RAG_SOURCE = 'gibberish'
+    const app = makeApp()
+    const res = await app.request('/api/rag/source')
+    expect(await res.json()).toMatchObject({ mode: 'drive' })
+  })
+
+  it('is reachable without a session (ungated like /enabled)', async () => {
+    // The route is mounted without requireSession; this test pins that
+    // — a regression that gates it would break the chat-frontend's
+    // first paint on a fresh tab.
+    const app = makeApp()
+    const res = await app.request('/api/rag/source')
+    expect(res.status).toBe(200)
   })
 })
 

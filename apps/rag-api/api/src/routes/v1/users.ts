@@ -51,21 +51,30 @@ userRoutes.post('/sync', async (c) => {
 // "Indexing your Drive…" UI polls this; without the 404 a typo'd or
 // stale user_id would silently provision a phantom row and feed the
 // worker a retry loop on a user who never asked to ingest.
+//
+// In filesystem mode (RAG_SOURCE=filesystem) the response also carries
+// `filesystem_*` fields scoped to the filesystem source so the
+// chat-frontend's <FilesystemPane> can render the right state. In drive
+// mode the response shape is unchanged from v0.5.x — the new fields
+// are omitted (not set to null) so 52L's payload is bit-identical.
 userRoutes.get('/:user_id/status', async (c) => {
   const tenant = c.get('tenant')
   const chatUserId = c.req.param('user_id')
   const user = await findUser(tenant.id, chatUserId)
   if (!user) return c.json({ error: 'user not found' }, 404)
   const pool = getPool()
+  const sourceMode = (process.env.RAG_SOURCE ?? 'drive').trim().toLowerCase()
+  const includeFilesystem = sourceMode === 'filesystem'
 
-  const [u, jobs, fileCount] = await Promise.all([
+  const [u, jobs, fileCount, filesystemStats] = await Promise.all([
     pool.query<{
       last_synced_at: Date | null
       last_error: string | null
       drive_oauth_status: string
       gdrive_my_ai_status: 'unknown' | 'present' | 'missing'
+      filesystem_status: 'unknown' | 'present' | 'missing'
     }>(
-      `SELECT last_synced_at, last_error, drive_oauth_status, gdrive_my_ai_status
+      `SELECT last_synced_at, last_error, drive_oauth_status, gdrive_my_ai_status, filesystem_status
          FROM rag.users WHERE id = $1`,
       [user.id],
     ),
@@ -80,11 +89,26 @@ userRoutes.get('/:user_id/status', async (c) => {
       `SELECT COUNT(*)::text AS count FROM rag.user_file_access WHERE user_id = $1`,
       [user.id],
     ),
+    // Only run when filesystem fields are needed so a drive-mode 52L
+    // deploy doesn't pay the cost on every poll. Counts files visible
+    // to this user via filesystem rows; last_walk_ts uses the most
+    // recent finished filesystem-source crawl.
+    includeFilesystem
+      ? pool.query<{ file_count: string; last_walk_ts: Date | null }>(
+          `SELECT
+             COUNT(*) FILTER (WHERE f.source_kind = 'filesystem')::text AS file_count,
+             MAX(f.last_indexed_at) FILTER (WHERE f.source_kind = 'filesystem') AS last_walk_ts
+           FROM rag.user_file_access a
+           JOIN rag.files f ON f.id = a.file_id
+           WHERE a.user_id = $1`,
+          [user.id],
+        )
+      : Promise.resolve({ rows: [] as Array<{ file_count: string; last_walk_ts: Date | null }> }),
   ])
   const u0 = u.rows[0]
   const inflight = jobs.rows[0]
 
-  return c.json({
+  const base = {
     last_synced_at: u0?.last_synced_at?.toISOString() ?? null,
     file_count: Number(fileCount.rows[0]?.count ?? 0),
     in_flight_job_id: inflight?.id ?? null,
@@ -93,6 +117,16 @@ userRoutes.get('/:user_id/status', async (c) => {
     // Lets the chat-side UX prompt the user to create their personal
     // folder if it's missing, without re-running the Drive lookup.
     my_ai_folder_status: u0?.gdrive_my_ai_status ?? 'unknown',
+  }
+
+  if (!includeFilesystem) return c.json(base)
+
+  const fs = filesystemStats.rows[0]
+  return c.json({
+    ...base,
+    filesystem_status: u0?.filesystem_status ?? 'unknown',
+    filesystem_file_count: Number(fs?.file_count ?? 0),
+    filesystem_last_walk_ts: fs?.last_walk_ts?.toISOString() ?? null,
   })
 })
 
