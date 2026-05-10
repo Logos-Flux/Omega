@@ -185,6 +185,21 @@ With both set, the controller's `/api/rag/*` proxy mounts and the
 harness's `rag_search` tool registers. With either unset, both
 silently disable. See `deploy/RAG.md`.
 
+**Source mode (v0.6.0+).** `RAG_SOURCE` picks the ingest source. The
+controller and rag-ingest worker both read it; values must match.
+
+| Value | Behavior |
+|---|---|
+| `drive` (default) | Per-user Google Drive crawl. Requires `ENABLE_GOOGLE_OAUTH=true` on the controller plus a Google OAuth client. |
+| `filesystem` | Recursive walk of `RAG_FILES_DIR` bind-mounted into rag-ingest. No OAuth. Bring up with `deploy/docker-compose.fs-rag.yml` layered on top of the base + RAG overlays. |
+
+The chat-frontend's Settings → Connectors card auto-adapts via
+`/api/rag/source` — drive mode renders the existing Connect-Drive UX,
+filesystem mode renders a path-anonymised "RAG content" pane with the
+same Sync now / Forget controls. See `deploy/RAG.md` § "Filesystem
+source (alternative to Drive)" for the full filesystem-mode runbook
+(operator workflow, sftp setup, drive→filesystem migration).
+
 ## When customization needs new UI structure
 
 Sometimes "what we need" can't be expressed as data — it's a new

@@ -1,0 +1,49 @@
+# Filesystem RAG source overlay.
+#
+# Layer with the base + RAG overlays:
+#
+#   docker compose -f docker-compose.yml \
+#                  -f docker-compose.rag.yml \
+#                  -f docker-compose.fs-rag.yml up -d --build
+#
+# Switches rag-ingest from per-user Drive crawl to a recursive walk of
+# a host-local directory bind-mounted into both rag-api and rag-ingest.
+# No Google OAuth required. Operators upload documents into the host
+# path via scp/sftp/cp; the worker indexes them on its normal poll
+# schedule (or on user-triggered "Sync now").
+#
+# Set in your `.env` next to docker-compose.yml:
+#
+#   RAG_SOURCE=filesystem            (matches the value baked here)
+#   RAG_FILES_HOST_DIR=/path/to/dir  (host path; defaults to ./rag-files
+#                                     relative to the compose project)
+#
+# The mount is read-only — the worker container can never modify the
+# source files, so a bug there can't corrupt content. Uploads happen
+# through a separate channel (scp/sftp on Helsinki, plain `cp` in dev).
+
+services:
+  rag-api:
+    environment:
+      RAG_SOURCE: filesystem
+      RAG_FILES_DIR: /app/rag-files
+    volumes:
+      - ${RAG_FILES_HOST_DIR:-./rag-files}:/app/rag-files:ro
+
+  rag-ingest:
+    environment:
+      RAG_SOURCE: filesystem
+      RAG_FILES_DIR: /app/rag-files
+      # Drive-side envs (GOOGLE_*, RAG_PERSONAL_FOLDER_NAME, etc.) are
+      # ignored when RAG_SOURCE=filesystem — leave them blank in your
+      # .env to make the intent obvious. The worker won't read them.
+    volumes:
+      - ${RAG_FILES_HOST_DIR:-./rag-files}:/app/rag-files:ro
+
+  controller:
+    environment:
+      RAG_SOURCE: filesystem
+      # In filesystem mode, /api/oauth/google/* should not be reachable.
+      # Leave ENABLE_GOOGLE_OAUTH unset (or =false); the controller will
+      # 503 those routes, and the chat-frontend's /api/rag/source probe
+      # will report features.oauth=false so no Connect-Drive UX renders.

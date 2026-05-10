@@ -1,10 +1,23 @@
 # RAG operator quickstart
 
-How to stand up Omega's Drive-backed retrieval feature end-to-end.
+How to stand up Omega's retrieval feature end-to-end.
 
-After this is wired the user can: open Settings → Connectors → Sync,
-then ask the assistant a question whose answer lives in their `my-ai/`
-Drive folder, and see the model call `rag_search` and cite the chunks.
+Two ingest sources are available, picked by the `RAG_SOURCE` env:
+
+- **`drive`** (default) — per-user Google Drive crawl. Each user
+  authorises Omega to read their `my-ai/` folder; an optional shared
+  knowledge base folder is crawled for everyone. Requires Google
+  OAuth. **The bulk of this guide covers this path.**
+- **`filesystem`** — recursive walk of an operator-managed host
+  directory bind-mounted into rag-ingest. No OAuth required. Better
+  fit for self-hosted single-tenant deploys where the operator wants
+  to curate the corpus directly. See [Filesystem source (alternative
+  to Drive)](#filesystem-source-alternative-to-drive) below.
+
+After this is wired (in either mode) the user can open Settings →
+Connectors → Sync, then ask the assistant a question whose answer lives
+in the indexed corpus, and see the model call `rag_search` and cite the
+chunks.
 
 ## What you're standing up
 
@@ -247,6 +260,171 @@ Other reasonable picks:
   records the embedding model identity per dataset — changing it
   requires re-embedding every doc. Switching the *host* of the same
   model is free (vectors are model-identical regardless of host).
+
+## Filesystem source (alternative to Drive)
+
+Available since v0.6.0. Picks an operator-managed host directory
+instead of per-user Google Drive. **Defaults are unchanged** — leave
+`RAG_SOURCE` unset (or `drive`) and existing deploys keep the v0.5.x
+flow.
+
+### When to pick filesystem mode
+
+- You're self-hosting for a single user or small team and would
+  rather curate the corpus by `cp`-ing files into a directory than
+  per-user Drive consent flows.
+- You don't have a Google Workspace and don't want one.
+- You want air-gapped retrieval — no outbound Drive calls.
+- You're running locally for development and a real Drive isn't
+  available.
+
+### Layout (v0.6.0)
+
+Flat. Every file under `RAG_FILES_DIR` is visible to every user in the
+tenant. The walk is recursive but skips:
+
+- dotfiles and dot-directories (`.git/`, `.DS_Store`, …)
+- symlinks (security invariant — never followed; use real files)
+- files with unknown extensions (resolved via filename, not magic
+  bytes; see `apps/rag-api/ingest/src/mime.ts` for the allowlist)
+- directories deeper than `RAG_FILESYSTEM_MAX_DEPTH` (default 16)
+
+Per-user subdirs (one directory per user, plus a `_shared/` peer)
+are deferred to v0.7.x as `RAG_FILESYSTEM_LAYOUT=per-user`. The DB
+schema (`source_id` as a relative path) supports both layouts without
+migration churn — the layout is just walk semantics.
+
+### Wiring (compose overlay)
+
+A new overlay `deploy/docker-compose.fs-rag.yml` flips both `rag-api`
+and `rag-ingest` to filesystem mode and bind-mounts the host
+directory:
+
+```bash
+# In your deploy/.env:
+RAG_SOURCE=filesystem
+RAG_FILES_HOST_DIR=/path/to/your/rag-files
+RAGFLOW_BASE_URL=http://host.docker.internal:9380
+RAGFLOW_API_KEY=<from RAGFlow Settings → API keys>
+RAG_ADMIN_BEARER_TOKEN=<openssl rand -hex 32>
+RAG_API_URL=http://rag-api:3100
+RAG_SERVICE_TOKEN=<same as RAG_ADMIN_BEARER_TOKEN>
+
+# Bring the stack up with all three overlays:
+cd deploy
+docker compose -f docker-compose.yml \
+               -f docker-compose.rag.yml \
+               -f docker-compose.fs-rag.yml \
+               up -d --build
+```
+
+The `RAG_FILES_HOST_DIR` defaults to `./rag-files` (relative to the
+compose project), so a fresh clone "just works" — drop test files into
+`Omega/deploy/rag-files/` and they get indexed.
+
+Steps 2 (RAGFlow setup) and 4 (dataset link) are unchanged — RAGFlow
+is the same in either mode. Step 3 (wire Omega's services) is replaced
+by the compose invocation above. Step 6 (smoke test) is unchanged
+except the Connectors card now shows "RAG content" instead of "Google
+Drive" and reports a file count from the host directory.
+
+### Operator workflow
+
+There's no web upload UI in v0.6.0 — the lightest mechanism that gets
+files indexed:
+
+```bash
+# Local dev:
+cp ~/Downloads/policies.pdf Omega/deploy/rag-files/
+
+# Helsinki / remote:
+scp ./policies.pdf omega-uploader@helsinki:/var/lib/omega/rag-files/
+```
+
+After a file lands in the directory, hit **Sync now** in Settings →
+Connectors. The walk picks it up; RAGFlow parses + embeds; the
+assistant can cite from it on the next query.
+
+A v0.7.x follow-on adds an in-app upload UI that drops files into the
+same directory via a small server-side endpoint. Not needed for v0.6.0.
+
+### Helsinki sftp setup
+
+For a public deploy where the operator uploads via sftp rather than
+exec'ing into the host, recommended pattern (v0.6.0):
+
+1. Create user `omega-uploader` on the host (snoochie CT 130 in our
+   case), primary group `omega-uploader`. Add the operator's SSH
+   public key to its `~/.ssh/authorized_keys`.
+2. ```bash
+   sudo install -d -o omega-uploader -g omega-uploader -m 2750 /var/lib/omega/rag-files
+   ```
+   The setgid bit (`2`) makes new uploads inherit the group so the
+   rag-ingest container (read-only volume) can read them.
+3. Optionally chroot the user to that directory by adding to
+   `/etc/ssh/sshd_config`:
+   ```
+   Match User omega-uploader
+       ChrootDirectory /var/lib/omega/rag-files
+       ForceCommand internal-sftp
+       AllowTcpForwarding no
+   ```
+   Note: chroot requires the directory to be root-owned with `0755`.
+   If you chroot, keep the upload-target subdirectory underneath (e.g.
+   `/var/lib/omega/rag-files/incoming/`) with `omega-uploader`-owned
+   permissions.
+4. Set `RAG_FILES_HOST_DIR=/var/lib/omega/rag-files` in the compose
+   `.env`. The `:ro` flag on the bind-mount in
+   `docker-compose.fs-rag.yml` means rag-ingest can't modify or delete
+   uploaded files.
+
+### Status fields
+
+In filesystem mode the `/api/v1/users/:id/status` response carries
+extra fields:
+
+| Field | Meaning |
+|---|---|
+| `filesystem_status` | `'present'` (operator has provisioned the source dir), `'missing'` (per-user-subdir layout only), `'unknown'` (default in flat layout) |
+| `filesystem_file_count` | Count of `source_kind='filesystem'` rows in the user's `user_file_access` |
+| `filesystem_last_walk_ts` | Most recent finished filesystem-source crawl (`MAX(last_indexed_at)`) |
+
+These are omitted (not null) on drive-mode payloads so 52L's response
+shape is unchanged.
+
+### Migrating drive → filesystem
+
+Migration 0004 (shipped with v0.6.0) is a one-way relax: existing
+drive rows in `rag.files` get backfilled `source_kind='drive'` and a
+new unique key on `(tenant_id, source_kind, source_id)`. Filesystem
+rows can coexist; they leave `gdrive_file_id` NULL.
+
+Switching a live deploy from drive to filesystem mode:
+
+1. Land migration 0004 (happens automatically on next rag-api boot —
+   see "Migrations run on boot" in [Gotchas](#gotchas)).
+2. Stop rag-ingest, populate `RAG_FILES_DIR` with the content you want
+   indexed, set `RAG_SOURCE=filesystem` and `RAG_FILES_HOST_DIR` in
+   `.env`.
+3. Bring the stack back up with `docker-compose.fs-rag.yml` overlaid.
+4. Existing drive rows stay in the DB and remain queryable until
+   someone runs `/api/rag/forget` to GC them. To clear them in bulk
+   without per-user forget calls, run:
+   ```sql
+   DELETE FROM rag.user_file_access a
+     USING rag.files f
+     WHERE a.file_id = f.id AND f.source_kind = 'drive';
+   -- then GC orphan files (run-once cleanup):
+   DELETE FROM rag.files
+     WHERE source_kind = 'drive'
+       AND NOT EXISTS (SELECT 1 FROM rag.user_file_access a WHERE a.file_id = id);
+   ```
+   (Note: this leaves the corresponding RAGFlow documents intact.
+   Either delete them in the RAGFlow UI or wait for `/forget` to run.)
+
+`RAG_SOURCE=both` is **not supported in v0.6.0** — the worker
+explicitly rejects it. Reserved for a future release once cross-source
+dedup semantics are pinned down.
 
 ## Disabling RAG
 
