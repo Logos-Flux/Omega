@@ -7,7 +7,8 @@
  * Run with: bun test apps/rag-api/ingest/src/gdrive.test.ts
  */
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test'
-import { findFolderByName, isIngestable } from './gdrive'
+import { findFolderByName } from './gdrive'
+import { isIngestable } from './mime'
 
 // Mock googleapis at the module level so findFolderByName never hits a
 // real Drive. The mock factory has to be installed before findFolderByName

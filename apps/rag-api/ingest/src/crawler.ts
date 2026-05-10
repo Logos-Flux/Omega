@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto'
 import { getPool } from './db'
-import { getDriveAccessToken } from './oauth'
-import { listAllUserFiles, downloadFile, findFolderByName, type DriveFile } from './gdrive'
+import { pickSource, type RagSource, type SourceFile, type SourceUser } from './source'
 import { uploadDocument, deleteDocument, parseDocuments } from './ragflow'
 
 interface UserRow {
@@ -12,77 +11,26 @@ interface UserRow {
   gdrive_my_ai_status: 'unknown' | 'present' | 'missing'
 }
 
-// Read crawl-scope env lazily — eager top-level consts capture at first
-// module-load and tests / per-process overrides can't change them.
-function personalFolderName(): string {
-  return process.env.RAG_PERSONAL_FOLDER_NAME ?? 'my-ai'
-}
-function knowledgeBaseFolderId(): string | null {
-  return process.env.RAG_KNOWLEDGE_BASE_FOLDER_ID || null
-}
-function legacyAllowlist(): string[] {
-  return (process.env.RAG_FOLDER_ALLOWLIST ?? '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean)
-}
-
-// Resolve and cache the user's personal folder id. Idempotent — if the
-// row already has a present id we return it without hitting Drive. On
-// 'missing', we don't re-resolve until the chat side bumps status back
-// to 'unknown' (e.g. via a "I created the folder, please retry" UI).
-async function resolveMyAiFolder(
-  user: UserRow,
-  accessToken: string,
-): Promise<string | null> {
-  if (user.gdrive_my_ai_status === 'present' && user.gdrive_my_ai_folder_id) {
-    return user.gdrive_my_ai_folder_id
-  }
-  if (user.gdrive_my_ai_status === 'missing') {
-    return null
-  }
-  const pool = getPool()
-  const name = personalFolderName()
-  const found = await findFolderByName(accessToken, name)
-  if (!found) {
-    await pool.query(
-      `UPDATE rag.users
-          SET gdrive_my_ai_folder_id = NULL,
-              gdrive_my_ai_status = 'missing'
-        WHERE id = $1`,
-      [user.id],
-    )
-    return null
-  }
-  if (found.ambiguous) {
-    console.warn(
-      `[crawler] multiple "${name}" folders for user ${user.chat_user_id}; using oldest (${found.id})`,
-    )
-  }
-  await pool.query(
-    `UPDATE rag.users
-        SET gdrive_my_ai_folder_id = $2,
-            gdrive_my_ai_status = 'present'
-      WHERE id = $1`,
-    [user.id, found.id],
-  )
-  return found.id
-}
-
 interface DatasetRow {
   id: string
   ragflow_dataset_id: string
 }
 
-// Run a per-user Drive crawl. Walks every file the user can see, dedups
-// across users by (tenant_id, gdrive_file_id), uploads new/changed
-// content to RAGFlow, refreshes the user's user_file_access rows.
+// Run a per-user crawl. Walks every file the active source surfaces for
+// the user, dedups across users by (tenant_id, source_kind, source_id),
+// uploads new/changed content to RAGFlow, refreshes the user's
+// user_file_access rows.
 //
-// Files the user could see last time but can't see now (lost share)
-// have their user_file_access row dropped — but the file row itself
-// stays in case another user can still see it. Garbage collection of
-// orphan files happens in the /forget path, not here.
-export async function crawlForUser(jobId: string, userId: string): Promise<{ files_seen: number; files_changed: number }> {
+// Files the user could see last time but can't see now (lost share, file
+// deleted from disk) have their user_file_access row dropped — but the
+// file row itself stays in case another user can still see it. Garbage
+// collection of orphan files happens in the /forget path, not here.
+//
+// The crawler is source-agnostic: drive vs filesystem is picked once via
+// RAG_SOURCE in source.ts. Cross-source bookkeeping (e.g. dropping
+// filesystem-only access rows when running a drive crawl) is scoped by
+// `source.kind` so a single-source crawl only manages its own rows.
+export async function crawlForUser(_jobId: string, userId: string): Promise<{ files_seen: number; files_changed: number }> {
   const pool = getPool()
 
   const userRes = await pool.query<UserRow>(
@@ -102,67 +50,38 @@ export async function crawlForUser(jobId: string, userId: string): Promise<{ fil
     throw new Error('no RAGFlow dataset configured for tenant — create one in the RAGFlow UI first')
   }
 
-  const accessToken = await getDriveAccessToken(user.chat_user_id)
-
-  // Compose crawl roots from up to three sources, in priority order:
-  //   1. The user's personal folder (default name `my-ai`, configurable
-  //      via RAG_PERSONAL_FOLDER_NAME). Resolved once and cached on
-  //      rag.users.gdrive_my_ai_folder_id.
-  //   2. The shared knowledge-base folder (RAG_KNOWLEDGE_BASE_FOLDER_ID),
-  //      identical for every user; per-user OAuth permissions filter
-  //      what each user actually sees inside it.
-  //   3. Legacy RAG_FOLDER_ALLOWLIST. Deprecated — log a warning and
-  //      remove next release. Kept as a one-release fallback so
-  //      operators don't lose ingest while they migrate config.
-  const roots: string[] = []
-  const myAiId = await resolveMyAiFolder(user, accessToken)
-  if (myAiId) roots.push(myAiId)
-  const kbId = knowledgeBaseFolderId()
-  if (kbId) roots.push(kbId)
-  const legacy = legacyAllowlist()
-  if (legacy.length > 0) {
-    console.warn(
-      '[crawler] RAG_FOLDER_ALLOWLIST is deprecated; switch to RAG_KNOWLEDGE_BASE_FOLDER_ID + per-user `my-ai` folders. ' +
-        'This env will be removed in the next release.',
-    )
-    roots.push(...legacy)
-  }
-
-  // Refuse to whole-Drive walk. Earlier behaviour (empty allowlist →
-  // full walk) was the bug we're closing — it hammered users with
-  // thousands of irrelevant files and made 404'd phantom users
-  // (issue #1) crawl forever. If neither root is configured we set
-  // a clear last_error and let the worker mark the job failed.
-  if (roots.length === 0) {
-    throw new Error(
-      `no crawl scope: user has no "${personalFolderName()}" folder in their Drive ` +
-        `(create one or have an admin set RAG_KNOWLEDGE_BASE_FOLDER_ID)`,
-    )
-  }
-
-  const files = await listAllUserFiles(accessToken, roots)
+  const source = await pickSource()
+  const sourceUser: SourceUser = user
+  const files = await source.listForUser(sourceUser)
 
   let filesChanged = 0
   let filesFailed = 0
-  const seenFileIds: string[] = []
+  const seenSourceIds: string[] = []
   const newDocIds: string[] = []
 
   for (const file of files) {
-    // Per-file failures (transient Drive 5xx, RAGFlow upload rejection,
+    // Per-file failures (transient I/O 5xx, RAGFlow upload rejection,
     // export size limit, etc.) are isolated — log and continue. Killing
     // the whole crawl on one bad file used to be the dominant failure
-    // mode (issue #4). The user_file_access INSERT below is a no-op when
-    // the rag.files row doesn't exist yet, so a never-ingested file just
-    // stays uncatalogued without blocking the rest of the run.
-    seenFileIds.push(file.id)
+    // mode (issue #4). The user_file_access INSERT below is a no-op
+    // when the rag.files row doesn't exist yet, so a never-ingested
+    // file just stays uncatalogued without blocking the rest of the run.
+    seenSourceIds.push(file.id)
     try {
-      const result = await ingestOne(user.tenant_id, dataset.id, dataset.ragflow_dataset_id, accessToken, file)
+      const result = await ingestOne(
+        user.tenant_id,
+        dataset.id,
+        dataset.ragflow_dataset_id,
+        source,
+        sourceUser,
+        file,
+      )
       if (result.changed) filesChanged++
       if (result.newDocId) newDocIds.push(result.newDocId)
     } catch (err) {
       filesFailed++
       console.warn(
-        `[crawler] ingest failed for ${file.id} (${file.mimeType}) "${file.name}":`,
+        `[crawler] ingest failed for ${file.source}:${file.id} (${file.mimeType}) "${file.name}":`,
         (err as Error).message,
       )
     }
@@ -170,26 +89,37 @@ export async function crawlForUser(jobId: string, userId: string): Promise<{ fil
     await pool.query(
       `INSERT INTO rag.user_file_access (user_id, file_id, last_checked_at)
        SELECT $1, f.id, NOW() FROM rag.files f
-        WHERE f.tenant_id = $2 AND f.gdrive_file_id = $3
+        WHERE f.tenant_id = $2 AND f.source_kind = $3 AND f.source_id = $4
        ON CONFLICT (user_id, file_id) DO UPDATE SET last_checked_at = NOW()`,
-      [user.id, user.tenant_id, file.id],
+      [user.id, user.tenant_id, source.kind, file.id],
     )
   }
   if (filesFailed > 0) {
     console.warn(`[crawler] ${filesFailed}/${files.length} files failed for user ${user.chat_user_id}`)
   }
 
-  // Drop access rows for files this user no longer sees.
-  if (seenFileIds.length === 0) {
-    await pool.query(`DELETE FROM rag.user_file_access WHERE user_id = $1`, [user.id])
+  // Drop access rows for files this user no longer sees, scoped to the
+  // current source's kind. A `drive`-mode crawl never touches filesystem
+  // access rows and vice versa — useful during a `RAG_SOURCE` migration
+  // window where one source is being drained while the other ramps up.
+  if (seenSourceIds.length === 0) {
+    await pool.query(
+      `DELETE FROM rag.user_file_access a
+        USING rag.files f
+        WHERE a.file_id = f.id
+          AND a.user_id = $1
+          AND f.source_kind = $2`,
+      [user.id, source.kind],
+    )
   } else {
     await pool.query(
       `DELETE FROM rag.user_file_access a
         USING rag.files f
         WHERE a.file_id = f.id
           AND a.user_id = $1
-          AND NOT (f.gdrive_file_id = ANY($2::text[]))`,
-      [user.id, seenFileIds],
+          AND f.source_kind = $2
+          AND NOT (f.source_id = ANY($3::text[]))`,
+      [user.id, source.kind, seenSourceIds],
     )
   }
 
@@ -211,20 +141,22 @@ async function ingestOne(
   tenantId: string,
   ragDatasetRowId: string,
   ragflowDatasetId: string,
-  accessToken: string,
-  file: DriveFile,
+  source: RagSource,
+  user: SourceUser,
+  file: SourceFile,
 ): Promise<{ changed: boolean; newDocId: string | null }> {
   const pool = getPool()
   const existing = await pool.query<{ id: string; content_hash: string | null; ragflow_doc_id: string | null }>(
     `SELECT id, content_hash, ragflow_doc_id FROM rag.files
-      WHERE tenant_id = $1 AND gdrive_file_id = $2`,
-    [tenantId, file.id],
+      WHERE tenant_id = $1 AND source_kind = $2 AND source_id = $3`,
+    [tenantId, file.source, file.id],
   )
 
   // Download — needed to compute content_hash either way. For native
   // Google docs this exports as docx/xlsx/pptx and the export bytes
   // change deterministically with the doc, so the hash is meaningful.
-  const dl = await downloadFile(accessToken, file)
+  // For filesystem files this just reads the bytes.
+  const dl = await source.download(file, user)
   const hash = createHash('sha256').update(dl.body).digest('hex')
 
   if (existing.rows.length > 0 && existing.rows[0]!.content_hash === hash) {
@@ -244,10 +176,16 @@ async function ingestOne(
 
   const { docId } = await uploadDocument(ragflowDatasetId, dl.filename, dl.body, dl.mimeType)
 
+  // gdrive_file_id stays populated for drive-source rows so existing
+  // queries that read it keep working; filesystem rows leave it NULL.
+  // The unique key the table enforces is (tenant_id, source_kind,
+  // source_id), added in migration 0004.
+  const gdriveFileId = file.source === 'drive' ? file.id : null
+
   await pool.query(
-    `INSERT INTO rag.files (tenant_id, dataset_id, gdrive_file_id, content_hash, mime_type, name, ragflow_doc_id, size_bytes, last_indexed_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
-     ON CONFLICT (tenant_id, gdrive_file_id)
+    `INSERT INTO rag.files (tenant_id, dataset_id, source_kind, source_id, gdrive_file_id, content_hash, mime_type, name, ragflow_doc_id, size_bytes, last_indexed_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+     ON CONFLICT (tenant_id, source_kind, source_id)
        DO UPDATE SET content_hash = EXCLUDED.content_hash,
                      mime_type = EXCLUDED.mime_type,
                      name = EXCLUDED.name,
@@ -257,7 +195,9 @@ async function ingestOne(
     [
       tenantId,
       ragDatasetRowId,
+      file.source,
       file.id,
+      gdriveFileId,
       hash,
       dl.mimeType,
       file.name,

@@ -3,9 +3,7 @@
 // the same provider here).
 
 import { google } from 'googleapis'
-
-const FOLDER_MIME = 'application/vnd.google-apps.folder'
-const NATIVE_PREFIX = 'application/vnd.google-apps.'
+import { FOLDER_MIME, NATIVE_EXPORTS, isIngestable } from './mime'
 
 export interface DriveFile {
   id: string
@@ -148,36 +146,6 @@ function pushIfFile(f: DriveApiFile, out: DriveFile[]): void {
     size: f.size ?? undefined,
     parents: f.parents ?? undefined,
   })
-}
-
-const NATIVE_EXPORTS: Record<string, { mimeType: string; extension: string }> = {
-  'application/vnd.google-apps.document': {
-    mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    extension: '.docx',
-  },
-  'application/vnd.google-apps.spreadsheet': {
-    mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    extension: '.xlsx',
-  },
-  'application/vnd.google-apps.presentation': {
-    mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-    extension: '.pptx',
-  },
-}
-
-// True for files we can actually feed into the pipeline. Folders are out
-// (we don't ingest them directly — walkFolder recurses into them). Google
-// native types are in only if we have an exporter for them; Drawings,
-// Forms, Scripts, Shortcuts, Sites, etc. are silently skipped because
-// trying to download them via files.get(alt:'media') fails with "Only
-// files with binary content can be downloaded" and previously killed the
-// whole crawl. Ordinary binary mimetypes always pass.
-export function isIngestable(mimeType: string): boolean {
-  if (mimeType === FOLDER_MIME) return false
-  if (mimeType.startsWith(NATIVE_PREFIX)) {
-    return Object.prototype.hasOwnProperty.call(NATIVE_EXPORTS, mimeType)
-  }
-  return true
 }
 
 export interface DownloadResult {
