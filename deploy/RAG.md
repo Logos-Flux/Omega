@@ -223,6 +223,60 @@ Other reasonable picks:
 | **TEI** (self-hosted) | any HF embedding model | Full control, GPU-bound |
 | **Ollama** (self-hosted) | `nomic-embed-text` | CPU-friendly, ~768-dim |
 
+## Parser config
+
+RAGFlow's per-dataset `parser_config` controls what happens between
+"upload" and "embed". Defaults are aggressive — fine for an evaluation
+demo, painful for a self-host:
+
+| Option | Default | Cost |
+|---|---|---|
+| `layout_recognize` | `DeepDOC` | Heavy OCR + vision pipeline. ~30-60 min on a 480-page PDF. Holds ~15 GB RSS while running. |
+| `graphrag.use_graphrag` | `true` | Extra LLM pass per doc to extract an entity graph. Multiplies token spend. |
+| `raptor.use_raptor` | `true` | Hierarchical clustering + LLM summarization per cluster. Multiplies token spend again. |
+
+For text-heavy docs (PDFs, markdown, plain text) the **Plain Text**
+parser is roughly 100x faster and gives essentially identical retrieval
+quality, because RAGFlow's chunker + the embedding model do the real
+work either way.
+
+**Recommended self-host default** — set at dataset creation or via the
+update API:
+
+```bash
+curl -X PUT -H "Authorization: Bearer $RAGFLOW_API_KEY" \
+  -H "Content-Type: application/json" \
+  http://$RAGFLOW_HOST/api/v1/datasets/$DATASET_ID \
+  -d '{
+    "parser_config": {
+      "layout_recognize": "Plain Text",
+      "chunk_token_num": 512,
+      "delimiter": "\n",
+      "graphrag": { "use_graphrag": false },
+      "raptor": { "use_raptor": false },
+      "auto_keywords": 0,
+      "auto_questions": 0,
+      "topn_tags": 3,
+      "html4excel": false
+    }
+  }'
+```
+
+Notes:
+
+- The change applies to **future uploads**. Documents already in the
+  dataset retain the parser_config they had at upload time. To re-parse
+  with the new config, delete the doc + re-upload (the worker walks the
+  filesystem source on the next sync and re-ingests).
+- When you do want DeepDOC — e.g. forms, tables, scanned PDFs where
+  layout matters — budget at least 16 GB RAM for the RAGFlow stack and
+  expect parse times of minutes per page. Run it on a separate machine
+  from your interactive workload if you can.
+- `graphrag` and `raptor` are independently useful for some retrieval
+  patterns. They're disabled here because they multiply LLM cost without
+  obviously improving the "answer this question from documents" baseline.
+  Re-enable selectively if you're optimising for graph-style queries.
+
 ## Gotchas
 
 - **DeepInfra base URL is `/v1`, not `/v1/openai`.** RAGFlow's
