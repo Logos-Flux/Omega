@@ -33,6 +33,8 @@ export function getComputeProvider(): ComputeProvider {
         env: dockerHarnessEnv(),
         network: process.env.HARNESS_NETWORK,
         hostUrlBase: process.env.HARNESS_HOST_URL_BASE ?? 'http://localhost',
+        publicUrl: process.env.HARNESS_PUBLIC_URL,
+        hostPort: process.env.HARNESS_HOST_PORT,
         socketPath: process.env.DOCKER_SOCKET ?? '/var/run/docker.sock',
       })
       return _provider
