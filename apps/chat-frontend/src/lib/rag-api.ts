@@ -59,7 +59,7 @@ export interface ForgetResponse {
   removed_files: number
 }
 
-class RagApiError extends Error {
+export class RagApiError extends Error {
   constructor(public status: number, public detail: string) {
     super(`rag-api ${status}: ${detail.slice(0, 200)}`)
   }
@@ -105,9 +105,16 @@ export async function getRagSource(): Promise<RagSourceInfo> {
 }
 
 /** GET /api/rag/status — fetches the current sync state for the
- *  authenticated user. Throws on 4xx/5xx. */
-export async function getRagStatus(): Promise<RagStatus> {
-  return jsonFetch<RagStatus>('/api/rag/status')
+ *  authenticated user. Returns `null` if the rag service has no row
+ *  for this user yet (404), which is the "never connected Drive"
+ *  state — caller renders a Connect CTA. Throws on every other 4xx/5xx. */
+export async function getRagStatus(): Promise<RagStatus | null> {
+  try {
+    return await jsonFetch<RagStatus>('/api/rag/status')
+  } catch (err) {
+    if (err instanceof RagApiError && err.status === 404) return null
+    throw err
+  }
 }
 
 /** POST /api/rag/sync — kick off (or join) a Drive crawl. Pass
