@@ -70,6 +70,14 @@ export function FilesystemPane() {
     try {
       const status = await getRagStatus()
       if (cancelled.current) return
+      if (!status) {
+        // Filesystem mode has no per-user OAuth, so a 404 here means the
+        // operator hasn't seeded this user into the rag-ingest worker
+        // yet — surface as an error rather than the drive-mode "Connect"
+        // CTA (which doesn't apply in this mode).
+        setView({ kind: 'error', message: 'No filesystem index for your user yet — ask the operator to seed your subdir or trigger a walk.' })
+        return
+      }
       setView(deriveView(status))
       if (status.in_flight_job_id) {
         pollTimer.current = setTimeout(() => {

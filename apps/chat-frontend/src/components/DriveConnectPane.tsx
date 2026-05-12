@@ -5,7 +5,9 @@
 // State machine:
 //
 //   loading-status     → spinner under the card header
-//   error              → 4xx/5xx from /status; show + Retry
+//   error              → unexpected 4xx/5xx from /status; show + Retry
+//   not-connected      → /status 404 (no rag.users row) OR row exists
+//                        with drive_oauth_status !== 'ok'; "Connect Drive"
 //   needs-folder       → my_ai_folder_status === 'missing'; instructions
 //                        to create the folder + Retry
 //   never-synced       → no last_synced_at and no in_flight_job; "Sync"
@@ -17,6 +19,7 @@
 // failure). Polling cancels on unmount.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { buildOAuthStartUrl } from '../lib/google-oauth'
 import {
   forgetRag,
   getRagStatus,
@@ -29,12 +32,17 @@ const POLL_INTERVAL_MS = 3000
 type ViewState =
   | { kind: 'loading-status' }
   | { kind: 'error'; message: string }
+  | { kind: 'not-connected' }
   | { kind: 'needs-folder'; status: RagStatus }
   | { kind: 'never-synced'; status: RagStatus }
   | { kind: 'syncing'; status: RagStatus }
   | { kind: 'synced'; status: RagStatus }
 
-function deriveView(status: RagStatus): Exclude<ViewState, { kind: 'loading-status' | 'error' }> {
+function deriveView(
+  status: RagStatus | null,
+): Exclude<ViewState, { kind: 'loading-status' | 'error' }> {
+  if (!status) return { kind: 'not-connected' }
+  if (status.drive_oauth_status !== 'ok') return { kind: 'not-connected' }
   if (status.my_ai_folder_status === 'missing') return { kind: 'needs-folder', status }
   if (status.in_flight_job_id) return { kind: 'syncing', status }
   if (!status.last_synced_at) return { kind: 'never-synced', status }
@@ -65,7 +73,7 @@ export function DriveConnectPane() {
       const status = await getRagStatus()
       if (cancelled.current) return
       setView(deriveView(status))
-      if (status.in_flight_job_id) {
+      if (status?.in_flight_job_id) {
         pollTimer.current = setTimeout(() => {
           if (!cancelled.current) void refresh()
         }, POLL_INTERVAL_MS)
@@ -116,6 +124,9 @@ export function DriveConnectPane() {
   if (view.kind === 'error') {
     return <ErrorPane message={view.message} onRetry={() => void refresh()} />
   }
+  if (view.kind === 'not-connected') {
+    return <NotConnectedPane />
+  }
   if (view.kind === 'needs-folder') {
     return <NeedsFolderPane onRetry={() => void refresh()} busy={busy} />
   }
@@ -140,6 +151,27 @@ function ErrorPane({ message, onRetry }: { message: string; onRetry: () => void 
         className="mt-2 rounded border border-t-border bg-t-surface px-3 py-1.5 text-xs font-medium text-t-muted transition-colors hover:border-t-border-active hover:text-t-bright"
       >
         Retry
+      </button>
+    </div>
+  )
+}
+
+function NotConnectedPane() {
+  const onConnect = () => {
+    window.location.href = buildOAuthStartUrl()
+  }
+  return (
+    <div className="space-y-3 text-sm text-t-muted">
+      <p>
+        Connect your Google Drive to let the assistant retrieve from files in your{' '}
+        <code className="rounded bg-t-deep px-1 py-0.5 font-mono text-xs">my-ai</code> folder.
+      </p>
+      <button
+        type="button"
+        onClick={onConnect}
+        className="rounded border border-t-accent bg-t-accent/10 px-3 py-1.5 text-xs font-medium text-t-bright transition-colors hover:bg-t-accent/20"
+      >
+        Connect Drive
       </button>
     </div>
   )

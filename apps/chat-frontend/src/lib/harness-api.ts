@@ -3,7 +3,7 @@
 // settings page reaches the harness directly, the same way the
 // HarnessTransport does, but without going through assistant-ui.
 //
-// Pattern: open a controller session (POST /api/controller/api/session/demo)
+// Pattern: open a controller session (POST /api/controller/api/session/start)
 // which returns `{sessionId, token, container:{url}}`, then make
 // authenticated `fetch(container.url + path)` calls with
 // `Authorization: Bearer <token>`. The settings page caches the
@@ -77,22 +77,31 @@ export interface ProfileProposal {
 
 /** Open (or fetch) a controller session for the current user. The session
  *  the harness profile endpoints expect is the same one the transport
- *  uses — auth is the harness JWT minted by the controller. */
+ *  uses — auth is the harness JWT minted by the controller.
+ *
+ *  Retries on 409 (concurrent provisioning) with the same backoff the
+ *  chat-surface transport uses: a second `/start` racing the first
+ *  surfaces 409 until the other call commits the row; on retry we hit
+ *  the existing-row fast path. Mirrors `harness-transport.ts`. */
 export async function openSession(): Promise<HarnessSessionHandle> {
-  // TODO(phase-1.1): switch to /api/session/start once the user is provisioned.
-  const res = await fetch(`${API_BASE}/api/controller/api/session/demo`, {
-    method: 'POST',
-    credentials: 'include',
-  })
-  if (!res.ok) {
+  const url = `${API_BASE}/api/controller/api/session/start`
+  const delays = [1500, 4000]
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetch(url, { method: 'POST', credentials: 'include' })
+    if (res.ok) {
+      const data = (await res.json()) as SessionStartResponse
+      return {
+        sessionId: data.sessionId,
+        token: data.token,
+        container: data.container,
+      }
+    }
     const body = await res.text().catch(() => '')
-    throw new Error(`controller /api/session/demo: ${res.status} ${body}`)
-  }
-  const data = (await res.json()) as SessionStartResponse
-  return {
-    sessionId: data.sessionId,
-    token: data.token,
-    container: data.container,
+    if (res.status === 409 && attempt < delays.length) {
+      await new Promise((r) => setTimeout(r, delays[attempt]))
+      continue
+    }
+    throw new Error(`controller /api/session/start: ${res.status} ${body}`)
   }
 }
 
