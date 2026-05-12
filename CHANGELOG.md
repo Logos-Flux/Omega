@@ -39,6 +39,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of thrown so the AI SDK tool wrapper hands the message back to the
   model. Without the env, the tool isn't registered (the model can't
   hallucinate a tool it doesn't know about).
+- **`apps/controller/goldens/README.md`** — operator playbook for
+  publishing a new golden image. Walks through building the harness
+  bundle, computing the manifest sha, registering in
+  `pi.golden_images`, applying via `scripts/apply-golden.ts`, promoting
+  across `alpha → beta → launch` channels, and retiring known-bad
+  versions.
+- **`apps/controller/goldens/example/manifest.json`** — illustrative
+  manifest demonstrating the `default_skills` clause. Its
+  `local_path` references the in-repo `apps/pi-harness/skills/` tree
+  via relative path, so operators inherit the canonical skills set
+  without copying it into their golden. Skills bundled this way land
+  at `/home/sprite/skills/` and show up in Agent Mode's sidebar — the
+  prior behavior (no `default_skills` clause anywhere) silently
+  shipped sprites with 0 skills loaded.
+- **`.gitignore` rule** for `apps/controller/goldens/*/` (excluding
+  `example/`), so operator-published goldens stay in the operator's
+  deploy repo and don't accidentally land in upstream commits.
 
 ## [0.6.0] - 2026-05-10
 

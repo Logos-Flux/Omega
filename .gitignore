@@ -21,3 +21,9 @@ RELEASE_CHECKLIST_OMEGA.md
 
 # Internal planning / handoff docs (private; not part of the public release)
 dev-docs/
+
+# Operator-published goldens. Only the example/ subdirectory is shipped
+# in OSS; real golden manifests live in their operator's deploy repo.
+# See apps/controller/goldens/README.md.
+apps/controller/goldens/*/
+!apps/controller/goldens/example/
