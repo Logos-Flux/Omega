@@ -92,6 +92,8 @@ services:
       DOCKER_SOCKET: /var/run/docker.sock
       HARNESS_NETWORK: ${COMPOSE_PROJECT_NAME:-omega}_default
       HARNESS_HOST_URL_BASE: http://localhost
+      HARNESS_PUBLIC_URL: ${HARNESS_PUBLIC_URL:-}
+      HARNESS_HOST_PORT: ${HARNESS_HOST_PORT:-}
       HARNESS_JWT_SECRET: ${HARNESS_JWT_SECRET:-dev-only-change-me-32-bytes-hex}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}

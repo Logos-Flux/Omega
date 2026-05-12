@@ -36,12 +36,43 @@ export interface DockerProviderOptions {
   /**
    * URL base the *browser* uses to reach the harness. The provider appends
    * `:<published-port>` from `docker inspect`. Default: `http://localhost`.
+   * Ignored when `publicUrl` is set.
    */
   hostUrlBase?: string
+  /**
+   * Verbatim URL the *browser* uses to reach the harness. When set, replaces
+   * the `${hostUrlBase}:${HostPort}` composition — useful when the harness
+   * sits behind a TLS reverse proxy on a path (e.g. Caddy `/harness/*`),
+   * because the browser-visible URL has no port and isn't constructible from
+   * Docker's inspect output. Pair with `hostPort` so the proxy upstream is
+   * predictable. Only one concurrent session works in this mode; multi-tenant
+   * deploys need per-session path routing.
+   */
+  publicUrl?: string
+  /**
+   * Fixed host port for the harness's `8080/tcp` binding. Default: empty
+   * string, which lets Docker pick a random port. Set this when fronting the
+   * harness with a reverse proxy that expects a known upstream port.
+   */
+  hostPort?: string
   /**
    * Path to the Docker daemon socket. Default: `/var/run/docker.sock`.
    */
   socketPath?: string
+}
+
+/**
+ * Compose the URL handed to the browser. When `publicUrl` is set it wins
+ * verbatim; otherwise we append the published host port to `hostUrlBase`.
+ * Exposed for unit tests.
+ */
+export function composeHarnessUrl(opts: {
+  publicUrl?: string
+  hostUrlBase: string
+  hostPort: string
+}): string {
+  if (opts.publicUrl) return opts.publicUrl
+  return `${opts.hostUrlBase}:${opts.hostPort}`
 }
 
 export class DockerProvider implements ComputeProvider {
@@ -50,6 +81,8 @@ export class DockerProvider implements ComputeProvider {
   private readonly env: Record<string, string | undefined>
   private readonly network: string | undefined
   private readonly hostUrlBase: string
+  private readonly publicUrl: string | undefined
+  private readonly hostPort: string
   private readonly socketPath: string
 
   constructor(opts: DockerProviderOptions) {
@@ -58,6 +91,8 @@ export class DockerProvider implements ComputeProvider {
     this.env = opts.env ?? {}
     this.network = opts.network
     this.hostUrlBase = opts.hostUrlBase ?? 'http://localhost'
+    this.publicUrl = opts.publicUrl
+    this.hostPort = opts.hostPort ?? ''
     this.socketPath = opts.socketPath ?? '/var/run/docker.sock'
   }
 
@@ -113,8 +148,9 @@ export class DockerProvider implements ComputeProvider {
       ExposedPorts: { '8080/tcp': {} },
       Labels: { 'com.logos-flux.omega.role': 'pi-harness', 'com.logos-flux.omega.user': name.slice(8) },
       HostConfig: {
-        // Random host port → 8080 in container.
-        PortBindings: { '8080/tcp': [{ HostPort: '' }] },
+        // Random host port → 8080 in container (or fixed via `hostPort` when
+        // the harness lives behind a reverse proxy with a known upstream).
+        PortBindings: { '8080/tcp': [{ HostPort: this.hostPort }] },
         // Per-user named volume keeps /workspace state across restarts.
         Mounts: [{ Type: 'volume', Source: `${name}-workspace`, Target: '/workspace' }],
         RestartPolicy: { Name: 'unless-stopped' },
@@ -135,13 +171,17 @@ export class DockerProvider implements ComputeProvider {
   }
 
   private async urlFor(name: string): Promise<string> {
+    if (this.publicUrl) return this.publicUrl
     const c = await this.inspect(name)
     if (!c) throw new Error(`urlFor: container ${name} disappeared`)
     const binding = c.NetworkSettings?.Ports?.['8080/tcp']?.[0]
     if (!binding?.HostPort) {
       throw new Error(`urlFor: ${name} has no published 8080/tcp binding`)
     }
-    return `${this.hostUrlBase}:${binding.HostPort}`
+    return composeHarnessUrl({
+      hostUrlBase: this.hostUrlBase,
+      hostPort: binding.HostPort,
+    })
   }
 
   private async daemon(method: string, path: string, body?: unknown): Promise<Response> {
