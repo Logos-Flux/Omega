@@ -5,6 +5,26 @@ All notable changes to Omega are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Cloudflare Access JWT session middleware** in both `controller` and
+  `chat-api`. When `CF_ACCESS_TEAM_DOMAIN` and `CF_ACCESS_AUD` are both
+  set, the session middleware verifies the CF Access JWT
+  (`Cf-Access-Jwt-Assertion` header or `CF_Authorization` cookie) against
+  the team's public JWKS, validates `aud` and `iss`, and identifies the
+  user from the verified `email` and `sub` claims. `chat.users` is
+  upserted by `cf_access_sub` so a user keeps the same row even if their
+  email changes at the IdP. Required for any multi-tenant deploy — the
+  prior single-user stub mapped every request to `DEFAULT_USER_EMAIL`,
+  collapsing all CF-Access-authed users into one identity. The stub
+  remains the default when CF Access env is absent, preserving the
+  self-host UX where the operator provides perimeter auth. Setting only
+  one of the two CF Access env vars is a misconfiguration and the
+  process fails to start (closed-loud rather than silently dropping to
+  the stub).
+
 ## [0.6.0] - 2026-05-10
 
 Filesystem RAG source + deploy plumbing envs. Self-hosted Omega deploys
