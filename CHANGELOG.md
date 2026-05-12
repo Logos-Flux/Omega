@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-05-12
+
+Multi-tenant unblocker + chat-frontend first-touch polish. v0.6.0 worked
+end-to-end for the ingest path but left the controller's session
+middleware as a single-user stub — every CF-Access-authed user
+collapsed into one `chat.users` row, so multi-tenant deploys silently
+saw every user as the same user. This release closes that gap, ports
+the existing harness `rag_search` tool into `chat-api` so plain-chat
+turns can answer from indexed Drive content too, ships the goldens
+operator playbook that Sprites-backed deploys need to land default
+skills on every sprite, and closes two ride-along chat-frontend bugs
+that regressed first-touch UX (Settings page session-open toast +
+missing "Connect Drive" CTA for brand-new users).
+
+### Fixed
+
+- **`openSession()` in `apps/chat-frontend/src/lib/harness-api.ts`**
+  now POSTs `/api/controller/api/session/start` instead of the
+  deprecated `/api/session/demo` (which never existed in OSS Omega —
+  the controller only ships `/start`). Previously every visit to the
+  Settings page surfaced a "Couldn't open session" toast as the route
+  404'd. The new code mirrors the chat-surface transport's 409-retry
+  loop (1.5s, then 4s) so a Settings open racing the chat surface's
+  first-sign-in provisioning resolves cleanly on the existing-row
+  retry instead of bubbling the 409 to the user.
+
 ### Added
 
 - **Cloudflare Access JWT session middleware** in both `controller` and
@@ -56,6 +82,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`.gitignore` rule** for `apps/controller/goldens/*/` (excluding
   `example/`), so operator-published goldens stay in the operator's
   deploy repo and don't accidentally land in upstream commits.
+- **`not-connected` view state in `<DriveConnectPane>`** with a
+  Connect Drive CTA that top-level-navigates to
+  `/api/oauth/google/start?return_to=...` via the existing
+  `buildOAuthStartUrl()` helper. Triggers on either a `/status` 404
+  (no `rag.users` row yet — brand-new user who hasn't OAuth'd) or
+  `drive_oauth_status !== 'ok'` (row exists but the OAuth flow never
+  landed a token, e.g. user bounced from the consent page). Before
+  this, both states fell into the generic error pane with no path
+  forward.
+- **`getRagStatus()` in `apps/chat-frontend/src/lib/rag-api.ts`** now
+  returns `RagStatus | null` instead of throwing on 404. The rag-api
+  documents 404 as the "unknown user" sentinel — explicitly *not* an
+  error, just a signal that no row exists yet — and the frontend now
+  treats it that way. All other 4xx/5xx still throw. `<FilesystemPane>`
+  handles the same `null` case as an operator-not-seeded error since
+  filesystem mode has no per-user OAuth.
+- **`RagApiError` is now exported** from `rag-api.ts`. Callers that
+  need to discriminate by HTTP status can `instanceof`-check it.
 
 ## [0.6.0] - 2026-05-10
 
