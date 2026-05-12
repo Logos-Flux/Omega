@@ -24,6 +24,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one of the two CF Access env vars is a misconfiguration and the
   process fails to start (closed-loud rather than silently dropping to
   the stub).
+- **`rag_search` tool in `chat-api`** (`apps/chat-api/src/lib/rag.ts`
+  + wiring in `providers.ts:toolsForProvider`). When `RAG_API_URL` and
+  `RAG_SERVICE_TOKEN` are both set, every chat turn — across Anthropic,
+  Gemini, and Perplexity — has access to a `rag_search` tool the model
+  can call to retrieve chunks from the user's indexed Drive content.
+  POSTs to `${RAG_API_URL}/api/v1/query` with `{ user_id, query, top_k }`
+  and a service-bearer Authorization; returns chunks with `file_name`,
+  `snippet`, `score`, and `source_url`. Mirror of
+  `apps/pi-harness/src/lib/rag.ts` byte-for-byte so the response shape
+  is consistent across Agent Mode and plain chat — the chat-frontend's
+  citation chip renderer sees the same payload regardless of which
+  surface answered. Failures are returned as `{ error: string }` instead
+  of thrown so the AI SDK tool wrapper hands the message back to the
+  model. Without the env, the tool isn't registered (the model can't
+  hallucinate a tool it doesn't know about).
 - **`apps/controller/goldens/README.md`** — operator playbook for
   publishing a new golden image. Walks through building the harness
   bundle, computing the manifest sha, registering in

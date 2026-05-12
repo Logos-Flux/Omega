@@ -116,7 +116,7 @@ chatRoutes.post('/', async (c) => {
     `[chat] ${provider}/${model} thread=${threadId} messages=${modelMessages.length} roles=${modelMessages.map((m) => m.role[0]).join('')} mismatched=${lock.mismatched}`,
   )
 
-  const tools = toolsForProvider(provider)
+  const tools = toolsForProvider(provider, { userId: user.id })
   const result = streamText({
     model: PROVIDERS[provider].resolve(model),
     messages: modelMessages,
