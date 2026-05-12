@@ -1,0 +1,32 @@
+{
+  "version": "0.0.0-example",
+  "notes": "Illustrative manifest. Copy this directory to `goldens/<version>/`, build pi-harness.js into it, recompute sha256, register in pi.golden_images, then run scripts/apply-golden.ts. See ../README.md.",
+  "os": "ubuntu-25.10",
+  "apt_packages": [
+    { "name": "poppler-utils", "min_version": "25.03.0" },
+    { "name": "pandoc",        "min_version": "3.1.11"  },
+    { "name": "weasyprint",    "min_version": "62.3"    }
+  ],
+  "npm_globals": [
+    { "name": "@mariozechner/gccli", "version": "0.1.2", "binary": "gccli" },
+    { "name": "@mariozechner/gdcli", "version": "0.1.1", "binary": "gdcli" },
+    { "name": "@mariozechner/gmcli", "version": "0.2.0", "binary": "gmcli" }
+  ],
+  "harness_bundle": {
+    "path": "pi-harness.js",
+    "remote_path": "/home/sprite/pi-harness.js",
+    "sha256": "REPLACE_WITH_SHA256_OF_BUILT_BUNDLE"
+  },
+  "fs_setup": [
+    {
+      "path": "/home/sprite",
+      "mode": "755",
+      "owner": "ubuntu:ubuntu",
+      "comment": "Sprite images ship /home/sprite as 750; bumping to 755 lets the sprite user traverse into ~/.gccli etc., otherwise connectors silently fail on EACCES during existsSync."
+    }
+  ],
+  "default_skills": {
+    "local_path": "../../../pi-harness/skills",
+    "remote_path": "/home/sprite/skills"
+  }
+}
