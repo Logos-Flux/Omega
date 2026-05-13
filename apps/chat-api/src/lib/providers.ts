@@ -49,7 +49,14 @@ export function toolsForProvider(provider: ProviderId, ctx: ToolContext): ToolSe
   // src/assembler.ts) so the chunk shape, citation rendering, and
   // user-facing description are consistent across plain-chat and
   // Agent-Mode sessions.
-  if (isRagEnabled()) {
+  //
+  // Skipped for Perplexity: `@ai-sdk/perplexity` does not pass `tools`
+  // through to the Sonar API (the SDK's `getArgs` builds the request
+  // body without reading `options.tools`), and Sonar models don't
+  // support function calling at the API level anyway. Registering
+  // rag_search for Perplexity is silently a no-op — Sonar has its own
+  // built-in web search as the retrieval surface.
+  if (isRagEnabled() && provider !== 'perplexity') {
     tools.rag_search = tool({
       description: [
         "Search the user's indexed Drive content (their personal `my-ai/` folder plus any shared knowledge base) for chunks relevant to a query.",
