@@ -1,5 +1,6 @@
 import {
   PROVIDERS,
+  isTierDisabled,
   useProviderSelection,
   type ProviderId,
   type Tier,
@@ -47,20 +48,34 @@ export function ProviderBar() {
         </div>
 
         <div className="inline-flex overflow-hidden rounded-md border border-t-border bg-t-surface">
-          {(['basic', 'advanced'] as const).map((t) => (
-            <button
-              key={t}
-              type="button"
-              onClick={() => setTier(t)}
-              className={cn(
-                'px-3 py-1 font-display text-[10px] uppercase tracking-[0.15em] transition-colors',
-                tier === t ? 'bg-t-accent-alt text-white' : 'text-t-muted hover:bg-t-hover',
-              )}
-              aria-pressed={tier === t}
-            >
-              {t}
-            </button>
-          ))}
+          {(['basic', 'advanced'] as const).map((t) => {
+            const disabled = isTierDisabled(provider, t)
+            return (
+              <button
+                key={t}
+                type="button"
+                onClick={() => setTier(t)}
+                disabled={disabled}
+                aria-disabled={disabled}
+                title={
+                  disabled
+                    ? 'Gemini Pro is temporarily unavailable — Google’s preview SKU doesn’t support our RAG search. Use Flash, or switch provider.'
+                    : undefined
+                }
+                className={cn(
+                  'px-3 py-1 font-display text-[10px] uppercase tracking-[0.15em] transition-colors',
+                  disabled
+                    ? 'cursor-not-allowed text-t-muted/40'
+                    : tier === t
+                      ? 'bg-t-accent-alt text-white'
+                      : 'text-t-muted hover:bg-t-hover',
+                )}
+                aria-pressed={tier === t}
+              >
+                {t}
+              </button>
+            )
+          })}
         </div>
 
         <span className="font-mono text-[10px] text-t-muted">{model}</span>

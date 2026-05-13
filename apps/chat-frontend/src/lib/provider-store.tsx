@@ -25,6 +25,17 @@ export const PROVIDERS: Record<
 export const DEFAULT_PROVIDER: ProviderId = 'perplexity'
 export const DEFAULT_TIER: Tier = 'advanced'
 
+// Gemini 3.1 Pro Preview is split into two Google SKUs:
+//   - `gemini-3.1-pro-preview`              — accepts googleSearch grounding, hangs on
+//                                             any `functionDeclarations`
+//   - `gemini-3.1-pro-preview-customtools`  — accepts custom function calls, rejects
+//                                             googleSearch
+// Until Google ships a unified Pro SKU (or we model-aware-pick), the Gemini Pro
+// option is disabled in the UI — Flash supports both tool surfaces in one model.
+export function isTierDisabled(provider: ProviderId, tier: Tier): boolean {
+  return provider === 'google' && tier === 'advanced'
+}
+
 /**
  * Inverse of `PROVIDERS[provider].models[tier]`. Returns null if the
  * model isn't one of the recognised pair members for this provider.
@@ -60,6 +71,9 @@ function readStoredSelection(): Selection {
     const parsed = JSON.parse(raw) as Partial<Selection>
     const provider = parsed.provider && parsed.provider in PROVIDERS ? parsed.provider : DEFAULT_PROVIDER
     const tier: Tier = parsed.tier === 'basic' || parsed.tier === 'advanced' ? parsed.tier : DEFAULT_TIER
+    // Coerce away any disabled (provider, tier) pair so a stored Gemini Pro
+    // selection from before this fix doesn't dead-end the next chat turn.
+    if (isTierDisabled(provider, tier)) return { provider, tier: 'basic' }
     return { provider, tier }
   } catch {
     return { provider: DEFAULT_PROVIDER, tier: DEFAULT_TIER }
@@ -80,11 +94,21 @@ export function ProviderSelectionProvider({ children }: { children: React.ReactN
   }, [selection])
 
   const setProvider = useCallback((provider: ProviderId) => {
-    setSelection((prev) => (prev.provider === provider ? prev : { ...prev, provider }))
+    setSelection((prev) => {
+      if (prev.provider === provider) return prev
+      // If the incoming provider can't honour the current tier (e.g. Gemini Pro
+      // is disabled), drop to basic so the resolved model is always valid.
+      const tier = isTierDisabled(provider, prev.tier) ? 'basic' : prev.tier
+      return { provider, tier }
+    })
   }, [])
 
   const setTier = useCallback((tier: Tier) => {
-    setSelection((prev) => (prev.tier === tier ? prev : { ...prev, tier }))
+    setSelection((prev) => {
+      if (prev.tier === tier) return prev
+      if (isTierDisabled(prev.provider, tier)) return prev
+      return { ...prev, tier }
+    })
   }, [])
 
   const value = useMemo<SelectionContextValue>(
