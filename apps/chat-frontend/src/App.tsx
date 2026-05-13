@@ -391,6 +391,7 @@ function ChatPageInner({
         <AppShell
           appId="chat"
           brandText={brand.name}
+          brandHref={import.meta.env.BASE_URL}
           drawer={<ChatDrawer />}
           topNavEndSlot={
             <UserMenu

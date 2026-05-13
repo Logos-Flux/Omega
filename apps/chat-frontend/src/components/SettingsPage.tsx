@@ -28,6 +28,7 @@ import {
   type Profile,
   type ProfileProposal,
 } from '../lib/harness-api'
+import { brand } from '../lib/brand'
 import { RAGSourceCard } from './RAGSourceCard'
 
 // ---------- Section nav ---------------------------------------------------
@@ -96,6 +97,8 @@ export function SettingsPage() {
   return (
     <AppShell
       appId="chat"
+      brandText={brand.name}
+      brandHref={import.meta.env.BASE_URL}
       topNavEndSlot={<UserMenu settingsHref={`${import.meta.env.BASE_URL}settings`} />}
     >
       <div className="flex min-h-full bg-t-deep">
