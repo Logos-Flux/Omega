@@ -15,9 +15,9 @@
     "@ai-sdk/anthropic": "^4.0.1",
     "@ai-sdk/google": "^4.0.2",
     "@ai-sdk/perplexity": "^4.0.1",
-    "@hono/node-server": "^2.0.1",
+    "@hono/node-server": "^2.1.0",
     "ai": "^7.0.4",
-    "hono": "^4.12.15",
+    "hono": "^4.13.1",
     "jose": "^6.2.3",
     "pg": "^8.20.0",
     "zod": "^4.4.3"
