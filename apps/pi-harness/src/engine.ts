@@ -102,6 +102,9 @@ const engineCore: EngineRunner = async (payload, { msg, emit, signal }) => {
   // system messages are preserved in the Anthropic provider as
   // independent system blocks (each with its own cache_control marker)
   // — see @ai-sdk/anthropic dist/index.mjs around L2107.
+  // AI SDK v7 rejects system roles in `messages` unless
+  // `allowSystemInMessages` is set (the `instructions`/`system` options
+  // would collapse our blocks into one, losing per-block cache_control).
   const messages = [...systemMessages, ...modelMessages]
 
   let fullText = ''
@@ -111,6 +114,7 @@ const engineCore: EngineRunner = async (payload, { msg, emit, signal }) => {
     const result = streamText({
       model: PROVIDERS[provider].resolve(model),
       messages,
+      allowSystemInMessages: true,
       ...(signal ? { abortSignal: signal } : {}),
       ...(tools ? { tools, ...(runtimeConfig.stopWhen ? { stopWhen: runtimeConfig.stopWhen } : {}) } : {}),
     })
