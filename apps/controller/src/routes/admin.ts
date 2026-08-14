@@ -1,6 +1,8 @@
 import { Hono } from 'hono'
 import { getPool, hasDatabase } from '../lib/db'
 import { requireAdmin } from '../middleware/admin'
+import { backupConfigured } from '../lib/backup-storage'
+import { exportUserWorkspace, exportAllWorkspaces } from '../lib/sprite-backup'
 
 export const adminRoutes = new Hono()
 
@@ -369,5 +371,34 @@ adminRoutes.post('/users/:id/applied', async (c) => {
     return c.json({ error: (err as Error).message }, 500)
   } finally {
     client.release()
+  }
+})
+
+// OPS-14 — back up one user's sprite workspace (conversations + memory) to
+// Tigris. The sprite-janitor calls this for a user right before destroying its
+// sprite (final export), so reaping a sprite never silently loses chat history.
+adminRoutes.post('/users/:id/export', async (c) => {
+  if (!hasDatabase) return c.json({ error: 'database not configured' }, 503)
+  if (!backupConfigured()) return c.json({ error: 'backup storage not configured (AWS_* + BUCKET_NAME)' }, 503)
+  try {
+    const result = await exportUserWorkspace(c.req.param('id'))
+    return c.json(result)
+  } catch (err) {
+    return c.json({ error: (err as Error).message }, 500)
+  }
+})
+
+// OPS-14 — nightly sweep: export every active sprite. Driven by the
+// sprite-backup GH Action. Best-effort per user (cold/unreachable sprites are
+// skipped, not failed) so one bad sprite doesn't abort the whole sweep.
+adminRoutes.post('/export/sweep', async (c) => {
+  if (!hasDatabase) return c.json({ error: 'database not configured' }, 503)
+  if (!backupConfigured()) return c.json({ error: 'backup storage not configured (AWS_* + BUCKET_NAME)' }, 503)
+  try {
+    const results = await exportAllWorkspaces()
+    const exported = results.filter((r) => r.status === 'exported').length
+    return c.json({ total: results.length, exported, skipped: results.length - exported, results })
+  } catch (err) {
+    return c.json({ error: (err as Error).message }, 500)
   }
 })

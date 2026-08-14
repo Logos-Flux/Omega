@@ -30,8 +30,20 @@ import {
 } from './skills'
 import { SoulRegistry } from './souls'
 import { PersonaRegistry } from './personas'
+import { readState } from './state'
+import { writeSkill } from './skill-write'
 import { listUploads, readUpload, writeUploadText } from './uploads'
 import { EXEC_ALLOWLIST, runExec } from './exec'
+import { runShell } from './shell'
+import { isDriveEnabled, searchDrive, fetchFile, copyFile, addComment } from './drive'
+import {
+  isImageGenEnabled,
+  generateImage,
+  ASPECT_RATIOS,
+  RENDERING_SPEEDS,
+  MAGIC_PROMPT,
+  STYLE_TYPES,
+} from './image'
 import {
   appendSystemMemory,
   writeSystemMemory,
@@ -119,36 +131,101 @@ async function readSoul(): Promise<string | null> {
 // Phase-I-active piece of slot 2 (rather than scattering it elsewhere)
 // keeps the architecture honest: when richer operator policy lands in
 // later phases, this fragment just becomes one of several entries.
-function buildOperatorPolicy(provider: ProviderId, now: Date): string {
-  const today = now.toISOString().slice(0, 10)
-  const searchToolName =
+// Format the calendar date as YYYY-MM-DD in the given IANA timezone, falling
+// back to UTC when tz is absent or invalid. Date-only on purpose: this feeds
+// the *cached* operator-policy slot, and a date changes at most once per day,
+// so the cache prefix survives within a day. The precise wall-clock time lives
+// in the volatile current-time slot (buildCurrentTime) so caching isn't busted
+// every turn.
+function formatDateInTz(now: Date, timezone?: string): string {
+  if (!timezone) return now.toISOString().slice(0, 10)
+  try {
+    // en-CA renders as YYYY-MM-DD.
+    return new Intl.DateTimeFormat('en-CA', { timeZone: timezone }).format(now)
+  } catch {
+    return now.toISOString().slice(0, 10)
+  }
+}
+
+// Volatile (NON-cached) current date + time, localized to the user's timezone
+// when known. Kept out of the cached prefix because it changes every turn.
+function buildCurrentTime(now: Date, timezone?: string): string {
+  const tz = timezone || 'UTC'
+  try {
+    const formatted = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz,
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      timeZoneName: 'short',
+    }).format(now)
+    return `The current date and time is ${formatted} (${tz}).`
+  } catch {
+    return `The current date and time is ${now.toISOString()} (UTC).`
+  }
+}
+
+function buildOperatorPolicy(provider: ProviderId, now: Date, timezone?: string): string {
+  const today = formatDateInTz(now, timezone)
+  const geminiFileSearch = provider === 'google' && isGeminiFileSearchEnabled()
+
+  // Knowledge-base retrieval tool exposed this turn.
+  const kbTool = geminiFileSearch ? 'file_search' : isRagEnabled() ? 'rag_search' : null
+  // Live web/grounding tool. File Search is mutually exclusive with
+  // google_search, so the Gemini File Search path has no web tool.
+  const webTool =
     provider === 'anthropic'
       ? 'web_search'
-      : provider === 'google'
+      : provider === 'google' && !geminiFileSearch
         ? 'google_search'
         : null
-  const groundingHint = searchToolName
-    ? ` For anything time-sensitive (weather, news, prices, current events, "what's the latest…"), call \`${searchToolName}\` to ground in live results — don't answer from memory.`
+
+  const groundingHint = webTool
+    ? ` For anything time-sensitive (weather, news, prices, current events, "what's the latest…"), call \`${webTool}\` to ground in live results — don't answer from memory.`
     : ''
-  return `Today is ${today}.${groundingHint}`
+
+  // Retrieval policy — keeps the agent from autonomously fanning out across
+  // the Drive/Gmail connectors (the `gdcli ls` / `gmcli search` thrash). Work
+  // the sources in order and stop as soon as you can answer.
+  const kbStep = kbTool
+    ? `2. To ANSWER a question from the knowledge base, search it with \`${kbTool}\` — it returns chunked snippets (good for answering, NOT for whole documents).`
+    : '2. (No knowledge-base search tool is configured this turn.)'
+  const driveStep = isDriveEnabled()
+    ? "3. For any work on an actual FILE — reading its full content, copying, reviewing, commenting — use the Drive TOOLS, never the `gdcli` skill (gdcli is My-Drive-only and CANNOT see the knowledge base / Shared Drives). `drive_search` finds files anywhere; `drive_fetch_file` returns the WHOLE document (use it instead of rag_search chunks whenever you need the full text); `drive_copy_file` copies a file into the user's Drive; `drive_comment` adds review notes. To review or mark up a document: drive_copy_file it into the user's Drive, drive_fetch_file the full content, then leave your findings as drive_comment comments on the copy — never edit the shared original. Do NOT read_skill gdcli for knowledge-base files."
+    : null
+  const webOption = webTool
+    ? `, or (b) treat it as a general/web question (use \`${webTool}\`)`
+    : ', or (b) treat it as a general-knowledge question'
+  const askStep = `${driveStep ? '4' : '3'}. If it's still not found, do NOT keep searching on your own. STOP and ask how to proceed — offer to (a) search their personal Google Drive (\`gdcli\`, My Drive) or Gmail (\`gmcli\`)${webOption}. It may not be about their internal files at all, so confirm first.`
+  const policy = [
+    '',
+    '',
+    "Retrieval policy — when a request involves the user's own materials, work through these in order and STOP as soon as you're done; do not exhaustively search:",
+    '1. If the user uploaded files this session, check them first (`list_uploads`, then `read_upload`).',
+    kbStep,
+    ...(driveStep ? [driveStep] : []),
+    askStep,
+    "Never run the `gdcli` (Drive) or `gmcli` (Gmail) connectors to sweep the user's personal account unless they asked, or you asked and they agreed.",
+  ].join('\n')
+
+  return `Today is ${today}.${groundingHint}${policy}`
 }
 
 // Slot 3 — User profile. Activated in Phase II.A.3.
 //
-// Reads /workspace/profile.json via the profile module (which validates
-// against the zod schema and defensively returns `{}` on any read /
-// parse / schema failure). When the profile is empty, returns null so
-// the assembler skips slot 3 entirely — no inert `<user_profile>` block
-// in the system message.
+// Read raw via readProfile() (validates against the zod schema and
+// defensively returns `{}` on any read / parse / schema failure) in build()'s
+// Promise.all, then rendered with renderProfile() below. build() reads the raw
+// profile (not a pre-rendered string) because it also needs profile.timezone
+// as the fallback timezone for the date/time slots.
 //
-// Renders the populated profile as natural English the model can read,
-// not a JSON dump. Each field is on its own line; absent fields are
+// renderProfile renders the populated profile as natural English the model can
+// read, not a JSON dump. Each field is on its own line; absent fields are
 // skipped silently. Wrapped in `<user_profile>…</user_profile>` so the
 // model can recognise it as structured context.
-async function readProfileSlot(): Promise<string | null> {
-  const profile = await readProfile()
-  return renderProfile(profile)
-}
 
 /**
  * Render a Profile as a `<user_profile>` block, or null if the profile
@@ -241,11 +318,15 @@ async function readPreferencesSlot(): Promise<string | null> {
   return null
 }
 
-// Slot 8 — Skill catalog. Active in Phase I (unfiltered; persona
-// filtering arrives in VI).
+// Slot 8 — Skill catalog. Filtered by the user's flat skill toggle
+// (state.json::disabledSkills): a skill switched off in Settings is
+// removed from the catalog so the model never sees it as available.
+// (This is the standalone per-user toggle, independent of persona
+// skill allow-lists, which remain inert.)
 async function readSkillCatalog(): Promise<string | null> {
-  const skills = await listSkills()
-  return buildSkillsSystemMessage(skills)
+  const [skills, { disabledSkills }] = await Promise.all([listSkills(), readState()])
+  const disabled = new Set(disabledSkills)
+  return buildSkillsSystemMessage(skills.filter((s) => !disabled.has(s.name)))
 }
 
 // Slot 9 — KB hits. Lazy via tool, never injected here. Activates in IV.
@@ -287,6 +368,20 @@ async function readUploadsCatalog(sessionId: string): Promise<string | null> {
 // part of the assembled RequestPayload.
 // ---
 
+// Gemini File Search — when GEMINI_FILE_SEARCH_STORE is set (a
+// `fileSearchStores/<id>` resource name owned by GOOGLE_API_KEY's project),
+// the Gemini agent retrieves from that managed store via the native
+// file_search tool instead of RAGFlow's rag_search. Mirrors chat-api's
+// providers.ts so plain-chat and Agent Mode behave the same. File Search is
+// mutually exclusive with google_search, so that grounding tool is dropped on
+// this path (file_search still coexists with our custom function tools).
+function geminiFileSearchStore(): string {
+  return process.env.GEMINI_FILE_SEARCH_STORE?.trim() ?? ''
+}
+function isGeminiFileSearchEnabled(): boolean {
+  return geminiFileSearchStore().length > 0
+}
+
 function toolsForProvider(
   provider: ProviderId,
   sessionId: string,
@@ -301,6 +396,14 @@ function toolsForProvider(
         name: z.string().describe('The skill name from <available_skills>.'),
       }),
       execute: async ({ name }) => {
+        // Guard the toggle: a skill the user switched off is absent from
+        // the slot-8 catalog, so refuse to load it here too — otherwise a
+        // model that remembers the name from history could bypass the
+        // toggle.
+        const { disabledSkills } = await readState()
+        if (disabledSkills.includes(name)) {
+          return { error: `skill disabled by the user: ${name}` }
+        }
         const body = await readSkill(name)
         if (!body) return { error: `unknown skill: ${name}` }
         return { skill: name, body }
@@ -338,6 +441,37 @@ function toolsForProvider(
         try {
           const info = await writeUploadText(sessionId, filename, content)
           return { ok: true, file: info }
+        } catch (e) {
+          return { error: (e as Error).message }
+        }
+      },
+    }),
+    write_skill: tool({
+      description: [
+        'Create or update a reusable skill — a packaged set of instructions for a recurring kind of task.',
+        'Use this when you notice a task pattern the user repeats, or when the user asks you to "remember how to do X" / "make a skill for this".',
+        'The skill is saved to the user\'s personal skill library and appears in <available_skills> on the next turn, loadable via read_skill.',
+        'Follow the skill-creator skill for how to write a good name/description/body. After writing, call read_skill to verify it reads back correctly.',
+      ].join(' '),
+      inputSchema: z.object({
+        name: z
+          .string()
+          .describe('Lowercase kebab-case identifier, 1–64 chars, e.g. "weekly-report". Becomes the skill name.'),
+        description: z
+          .string()
+          .describe('One line. This is what the model (you, later) sees in <available_skills> to decide when to load the skill — make it a clear "activate when …" trigger.'),
+        body: z
+          .string()
+          .describe('The full SKILL.md instructions in markdown (protocol, steps, voice). No frontmatter — it is generated from name + description.'),
+      }),
+      execute: async ({ name, description, body }) => {
+        try {
+          const result = await writeSkill({ name, description, body })
+          return {
+            ok: true,
+            ...result,
+            note: `Skill "${result.name}" ${result.overwritten ? 'updated' : 'created'}. Call read_skill("${result.name}") to verify.`,
+          }
         } catch (e) {
           return { error: (e as Error).message }
         }
@@ -399,7 +533,7 @@ function toolsForProvider(
     }),
     write_memory: tool({
       description:
-        'Append (default) or replace the persistent memory file at /workspace/memory.md. The file is read on every subsequent request and injected as a system message, so anything you write here will shape future answers. Use append for incremental notes (decisions, user preferences, project state). Use replace only when the user explicitly asks to wipe or rewrite memory. Keep entries dated and short.',
+        'Append (default) or replace the user\'s persistent memory. The memory is read on every subsequent request and injected as a system message, so anything you write here will shape future answers. Use append for incremental notes (decisions, user preferences, project state). Use replace only when the user explicitly asks to wipe or rewrite memory. The user can view and edit this memory in Settings, so keep entries dated, short, and legible.',
       inputSchema: z.object({
         text: z
           .string()
@@ -422,10 +556,61 @@ function toolsForProvider(
       },
     }),
   }
+  // shell — arbitrary `bash -lc` in the sprite's persistent /workspace. The
+  // sprite container is the isolation boundary, so a real CLI is contained to
+  // the user's own sandbox. Default-on; operators who don't want a shell set
+  // HARNESS_SHELL_ENABLED=false on the controller's harness env.
+  if (process.env.HARNESS_SHELL_ENABLED !== 'false') {
+    tools.shell = tool({
+      description: [
+        'Run a shell command in this sprite via `bash -lc`. This is a real,',
+        'persistent CLI: the working directory is /workspace and survives across',
+        'turns, so clones, installs, and files you create stay around.',
+        'Supports pipes, redirects, chaining, git, package managers, and code execution.',
+        '',
+        'Use this for: running scripts, git operations, installing/running tools,',
+        'multi-step file processing — anything a terminal does.',
+        'Prefer the dedicated tools when they fit: list_uploads/read_upload/write_file',
+        'for simple file I/O, exec for the allowlisted document/connector binaries,',
+        'rag_search for the user\'s indexed Drive content.',
+        '',
+        'Runs as the sprite user with a scrubbed environment (no harness secrets).',
+        'Output is capped at 200 KB per stream and the command is killed after',
+        '2 minutes — for long jobs, start them in the background and poll.',
+      ].join(' '),
+      inputSchema: z.object({
+        command: z
+          .string()
+          .describe(
+            'The command line to run, e.g. "git clone https://… && cd repo && ls -la". ' +
+            'Runs through bash -lc with /workspace as the cwd.',
+          ),
+      }),
+      execute: async ({ command }) => {
+        try {
+          const result = await runShell(command)
+          return {
+            exitCode: result.exitCode,
+            durationMs: result.durationMs,
+            truncated: result.truncated,
+            stdout: result.stdout || '(no output)',
+            ...(result.stderr ? { stderr: result.stderr } : {}),
+          }
+        } catch (e) {
+          return { error: (e as Error).message }
+        }
+      },
+    })
+  }
+  // When Gemini File Search is active, the google path uses the native
+  // file_search tool as its knowledge-base retrieval instead of RAGFlow's
+  // rag_search (keeps Agent Mode consistent with plain chat).
+  const geminiFileSearch = provider === 'google' && isGeminiFileSearchEnabled()
+
   // rag_search — registered only when both RAG_API_URL and
   // RAG_SERVICE_TOKEN are set on the harness env. Lets the model query
   // the user's indexed Drive content (per-user ACL applied server-side).
-  if (isRagEnabled()) {
+  if (isRagEnabled() && !geminiFileSearch) {
     tools.rag_search = tool({
       description: [
         "Search the user's indexed Drive content (their personal `my-ai/` folder plus any shared knowledge base) for chunks relevant to a query.",
@@ -451,14 +636,141 @@ function toolsForProvider(
       },
     })
   }
+  // Shared-Drive-aware Drive access — registered when the controller can mint
+  // the user's Google token. Unlike the gdcli connector (My-Drive only, can't
+  // see Shared Drives), these reach the shared KB. Use them for a file's FULL
+  // content or to copy a file, vs rag_search/file_search for chunked Q&A.
+  if (isDriveEnabled()) {
+    tools.drive_search = tool({
+      description:
+        'Find Google Drive files by name or content across My Drive AND all Shared Drives (including the shared knowledge base). Returns id, name, mimeType, link. Use this to locate a file before reading or copying it — the gdcli connector cannot see Shared Drives, so use this for anything in the KB.',
+      inputSchema: z.object({
+        query: z.string().describe('Words from the file name or its contents.'),
+        limit: z.number().int().min(1).max(50).optional().describe('Max results (default 10).'),
+      }),
+      execute: async ({ query, limit }) => {
+        try {
+          return { files: await searchDrive(userId, query, limit ?? 10) }
+        } catch (e) {
+          return { error: (e as Error).message }
+        }
+      },
+    })
+    tools.drive_fetch_file = tool({
+      description:
+        "Fetch the FULL content of a Drive file by id (Shared-Drive aware). Google Docs/Sheets/Slides come back as text inline; other files (PDF, docx, …) are saved to this session's uploads so you can read them with exec (pdftotext/pandoc). Use this when you need the whole document — not the chunked snippets from rag_search/file_search.",
+      inputSchema: z.object({
+        file_id: z.string().describe('The Drive file id (from a rag_search citation or a drive_search result).'),
+      }),
+      execute: async ({ file_id }) => {
+        try {
+          return await fetchFile(userId, file_id, sessionId)
+        } catch (e) {
+          return { error: (e as Error).message }
+        }
+      },
+    })
+    tools.drive_copy_file = tool({
+      description:
+        "Make a server-side copy of a Drive file (Shared-Drive aware), optionally renamed and/or placed in a target folder. Returns the new file id + link. Use this to copy a shared file into the user's own Drive — e.g. before reviewing/commenting so you don't touch the shared original.",
+      inputSchema: z.object({
+        file_id: z.string().describe('The Drive file id to copy.'),
+        name: z.string().optional().describe('Name for the copy (defaults to "Copy of …").'),
+        folder_id: z.string().optional().describe('Destination folder id (defaults to My Drive root).'),
+      }),
+      execute: async ({ file_id, name, folder_id }) => {
+        try {
+          return await copyFile(userId, file_id, name, folder_id)
+        } catch (e) {
+          return { error: (e as Error).message }
+        }
+      },
+    })
+    tools.drive_comment = tool({
+      description:
+        "Add a review comment to a Drive file (e.g. a Google Doc). Use this to leave suggestions/feedback the user can read and resolve — the closest thing to a tracked-change suggestion. Comment on a COPY in the user's Drive (drive_copy_file first), not the shared original. Unanchored, so reference the section in the comment text (e.g. 'Section 2 (IP assignment): …').",
+      inputSchema: z.object({
+        file_id: z.string().describe('The Drive file id to comment on (usually the copy you just made).'),
+        content: z.string().describe('The comment text. Reference the relevant section/clause.'),
+      }),
+      execute: async ({ file_id, content }) => {
+        try {
+          return await addComment(userId, file_id, content)
+        } catch (e) {
+          return { error: (e as Error).message }
+        }
+      },
+    })
+  }
+  // Image generation via Ideogram — registered only when IDEOGRAM_API_KEY is on
+  // the harness env. Runs server-side in the harness (the exec sandbox can't
+  // reach the API or hold the key) and saves each PNG into the session uploads,
+  // so the user can view/download it. Driven by the `image-gen` skill.
+  if (isImageGenEnabled()) {
+    tools.generate_image = tool({
+      description: [
+        'Generate an image from a text prompt with Ideogram and save it to this session for the user.',
+        'Use this when the user asks to create, draw, make, design, or generate a picture/image/logo/illustration/poster/icon.',
+        'Ideogram renders legible text inside images well — good for logos, posters, mockups, signage.',
+        'The image is saved to uploads (downloadable by the user, listed in list_uploads); you get back filenames, NOT pixels — never try to read the PNG bytes.',
+        'Write a vivid, specific prompt (subject, style, composition, colors, lighting). Do not narrate the tool call.',
+      ].join(' '),
+      inputSchema: z.object({
+        prompt: z
+          .string()
+          .describe('Vivid, specific description of the image. Include subject, style, composition, colors, mood. For text-in-image, quote the exact words to render.'),
+        aspect_ratio: z
+          .enum(ASPECT_RATIOS)
+          .optional()
+          .describe('Aspect ratio in WxH form (e.g. "1x1", "16x9", "9x16"). Default 1x1. NOTE the "x", not a colon.'),
+        rendering_speed: z
+          .enum(RENDERING_SPEEDS)
+          .optional()
+          .describe('FLASH (fastest, lowest quality) → TURBO → DEFAULT → QUALITY (slowest, best). Default DEFAULT. Use QUALITY when the user wants a polished final, FLASH for quick drafts.'),
+        magic_prompt: z
+          .enum(MAGIC_PROMPT)
+          .optional()
+          .describe('AUTO/ON/OFF — Ideogram\'s prompt-enhancer. ON enriches a short prompt; OFF renders your prompt verbatim (use OFF when the user gave exact wording or specific text to render).'),
+        style_type: z
+          .enum(STYLE_TYPES)
+          .optional()
+          .describe('AUTO, GENERAL, REALISTIC, DESIGN (logos/graphics/typography), or FICTION (illustration/concept-art).'),
+        negative_prompt: z.string().optional().describe('What to avoid or exclude from the image.'),
+        num_images: z
+          .number()
+          .int()
+          .min(1)
+          .max(8)
+          .optional()
+          .describe('How many variations to generate (default 1). Use 2–4 when the user wants options.'),
+        seed: z.number().int().optional().describe('Fix the seed to reproduce or vary a prior result.'),
+      }),
+      execute: async (args) => {
+        try {
+          return await generateImage(args, sessionId)
+        } catch (e) {
+          return { error: (e as Error).message }
+        }
+      },
+    })
+  }
   if (provider === 'anthropic') {
     tools.web_search = anthropicTools.tools.webSearch_20250305({ maxUses: 5 })
   }
   if (provider === 'google') {
-    // Tool name MUST be `google_search` for Gemini to recognize it as the
-    // server-side grounding tool. Args are empty — Gemini composes queries
-    // from conversation context.
-    tools.google_search = googleProvider.tools.googleSearch({})
+    if (geminiFileSearch) {
+      // Native managed-RAG retrieval from the configured File Search store.
+      // Mutually exclusive with google_search, so grounding is dropped here;
+      // file_search coexists fine with our custom function tools.
+      tools.file_search = googleProvider.tools.fileSearch({
+        fileSearchStoreNames: [geminiFileSearchStore()],
+      })
+    } else {
+      // Tool name MUST be `google_search` for Gemini to recognize it as the
+      // server-side grounding tool. Args are empty — Gemini composes queries
+      // from conversation context.
+      tools.google_search = googleProvider.tools.googleSearch({})
+    }
   }
   return tools as ToolSet
 }
@@ -480,7 +792,7 @@ export const PromptAssembler = {
     // Pull every slot's contribution. Inert slots return null.
     const [
       soul,
-      profile,
+      rawProfile,
       memory,
       personaBody,
       personaMemory,
@@ -491,7 +803,7 @@ export const PromptAssembler = {
       conversationLines,
     ] = await Promise.all([
       readSoul(), // 1
-      readProfileSlot(), // 3 (operator policy is synchronous; computed below)
+      readProfile(), // 3 raw — rendered below; also the timezone fallback source
       readGlobalMemory(), // 4
       readPersonaBody(personaName), // 5
       readPersonaMemory(personaName), // 6
@@ -502,7 +814,14 @@ export const PromptAssembler = {
       readConversation(sessionId), // 14
     ])
 
-    const operatorPolicy = buildOperatorPolicy(provider, now) // 2
+    // Slot 3 rendered + timezone precedence: explicit per-message tz wins
+    // (handles travel without clobbering the manual profile field), then the
+    // profile's saved tz, then UTC (handled downstream by the formatters).
+    const profile = renderProfile(rawProfile)
+    const timezone = invocation.timezone ?? rawProfile.timezone
+
+    const operatorPolicy = buildOperatorPolicy(provider, now, timezone) // 2
+    const currentTime = buildCurrentTime(now, timezone) // 2b (volatile)
     const triggerPayload = readTriggerPayloadSlot(invocation) // 11
 
     // Build system messages in canonical order. Slots 1–7 are the
@@ -547,6 +866,11 @@ export const PromptAssembler = {
     if (preferences) {
       systemMessages.push(systemSlot(preferences, provider, true))
     }
+
+    // Slot 2b — Current date + time (NO cache; changes every turn). Placed
+    // here, after the last cached slot, so the wall-clock time doesn't
+    // invalidate the cached prefix above it.
+    systemMessages.push(systemSlot(currentTime, provider, false))
 
     // Slot 8 — Skill catalog (no cache marker — varies as user adds
     // skills, kept out of the cache prefix).

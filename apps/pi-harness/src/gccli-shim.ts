@@ -41,6 +41,12 @@ import { join } from 'node:path'
 // 50 minutes — Google access tokens are 1h, so we refresh with 10min slack.
 const REFRESH_INTERVAL_MS = 50 * 60 * 1000
 
+// If a refresh tick fails (controller blip, transient network), retry on
+// this interval until success. Without this, a single failure leaves the
+// cached access_token to expire (1h TTL) and every gmcli/gccli/gdcli call
+// 400s with `invalid_grant` until the next 50-min tick fires.
+const ERROR_RETRY_INTERVAL_MS = 60 * 1000
+
 // The connectors expect a non-empty refresh_token field. We never want
 // google-auth-library to try refreshing — we manage that ourselves — so
 // we use a sentinel string that fails loudly at Google if it's ever
@@ -72,7 +78,9 @@ export interface MintedToken {
 
 export interface ShimConfig {
   controllerBaseUrl: string
-  controllerServiceToken: string
+  // SEC-01 — the per-sprite, userId-scoped mint token (signed with a key the
+  // Sprite never holds), replacing the fleet-shared CONTROLLER_SERVICE_TOKEN.
+  controllerMintToken: string
   // OAuth client id/secret to record in accounts.json. The shim doesn't
   // *use* these (we never refresh client-side), but the connector
   // libraries instantiate an OAuth2Client with them, so they have to be
@@ -84,11 +92,11 @@ export interface ShimConfig {
 
 export function readShimConfig(env: NodeJS.ProcessEnv = process.env): ShimConfig | null {
   const controllerBaseUrl = (env.CONTROLLER_BASE_URL ?? '').replace(/\/+$/, '')
-  const controllerServiceToken = env.CONTROLLER_SERVICE_TOKEN ?? ''
-  if (!controllerBaseUrl || !controllerServiceToken) return null
+  const controllerMintToken = env.CONTROLLER_MINT_TOKEN ?? ''
+  if (!controllerBaseUrl || !controllerMintToken) return null
   return {
     controllerBaseUrl,
-    controllerServiceToken,
+    controllerMintToken,
     googleClientId: env.GOOGLE_OAUTH_CLIENT_ID ?? '',
     googleClientSecret: env.GOOGLE_OAUTH_CLIENT_SECRET ?? '',
   }
@@ -101,15 +109,19 @@ export function readShimConfig(env: NodeJS.ProcessEnv = process.env): ShimConfig
  * Exported for testing.
  */
 export async function mintGoogleToken(
-  args: { userId: string; controllerBaseUrl: string; controllerServiceToken: string },
+  args: { userId: string; controllerBaseUrl: string; controllerMintToken: string },
   fetchImpl: typeof fetch = fetch,
 ): Promise<MintedToken> {
+  // SEC-01: authenticate with the per-sprite mint token. It encodes exactly
+  // this Sprite's userId, so the controller can only mint THIS user's token —
+  // the cross-user mint vector is closed at the credential, not by a header
+  // the agent could omit.
   const res = await fetchImpl(
     `${args.controllerBaseUrl}/api/oauth/google/access-token`,
     {
       method: 'POST',
       headers: {
-        authorization: `Bearer ${args.controllerServiceToken}`,
+        'x-mint-token': args.controllerMintToken,
         'content-type': 'application/json',
       },
       body: JSON.stringify({ userId: args.userId }),
@@ -210,10 +222,52 @@ export async function writeGccliAccounts(
 
 interface ShimState {
   userId: string
-  timer: ReturnType<typeof setInterval>
+  timer: ReturnType<typeof setTimeout>
+  intervalMs: number
+  errorRetryMs: number
+  refresh: () => Promise<void>
+  lastSuccessAt: number | null
+  lastErrorAt: number | null
+  lastError: string | null
+  consecutiveFailures: number
 }
 
 let active: ShimState | null = null
+
+export interface ShimStatus {
+  active: boolean
+  userId: string | null
+  lastSuccessAt: number | null
+  lastErrorAt: number | null
+  lastError: string | null
+  consecutiveFailures: number
+}
+
+/**
+ * Snapshot of the shim's refresh loop state for /healthz. Returns
+ * `active: false` if no shim is running (e.g. the harness booted
+ * without controller env vars).
+ */
+export function getShimStatus(): ShimStatus {
+  if (!active) {
+    return {
+      active: false,
+      userId: null,
+      lastSuccessAt: null,
+      lastErrorAt: null,
+      lastError: null,
+      consecutiveFailures: 0,
+    }
+  }
+  return {
+    active: true,
+    userId: active.userId,
+    lastSuccessAt: active.lastSuccessAt,
+    lastErrorAt: active.lastErrorAt,
+    lastError: active.lastError,
+    consecutiveFailures: active.consecutiveFailures,
+  }
+}
 
 /**
  * Mint once + start the refresh loop. Idempotent on the same userId
@@ -229,49 +283,59 @@ export async function startGccliShim(args: {
   home?: string
   fetchImpl?: typeof fetch
   intervalMs?: number
+  errorRetryMs?: number
   onError?: (err: unknown, phase: 'mint' | 'write') => void
 }): Promise<void> {
   if (active && active.userId === args.userId) return
   if (active) {
-    clearInterval(active.timer)
+    clearTimeout(active.timer)
     active = null
   }
 
   const home = args.home ?? homedir()
   const fetchImpl = args.fetchImpl ?? fetch
-  const interval = args.intervalMs ?? REFRESH_INTERVAL_MS
+  const intervalMs = args.intervalMs ?? REFRESH_INTERVAL_MS
+  const errorRetryMs = args.errorRetryMs ?? ERROR_RETRY_INTERVAL_MS
   const onError =
     args.onError ??
     ((err, phase) => {
       console.error(`[gccli-shim] ${phase} failed:`, (err as Error).message ?? err)
     })
 
-  const refresh = async (): Promise<void> => {
+  // Refresh once. Returns `true` on success (token minted + written, OR
+  // controller returned no email which we treat as a "not retryable here"
+  // soft-success — the next normal tick will re-warn). Returns `false`
+  // when something we *can* retry shortly went wrong.
+  const refresh = async (): Promise<boolean> => {
     let token: MintedToken
     try {
       token = await mintGoogleToken(
         {
           userId: args.userId,
           controllerBaseUrl: args.config.controllerBaseUrl,
-          controllerServiceToken: args.config.controllerServiceToken,
+          controllerMintToken: args.config.controllerMintToken,
         },
         fetchImpl,
       )
     } catch (err) {
       onError(err, 'mint')
-      return
+      recordFailure(err)
+      return false
     }
     if (!token.email) {
       // Token minted, but the controller didn't return an email for
       // this user (pathological: user has oauth tokens but no
       // chat.users row). Log once at warn and bail — the next tick
       // will re-warn, which is desired (operators see the issue).
+      // Treat as success for backoff purposes: retrying every 60s
+      // won't fix a missing chat.users row.
       console.warn(
         '[gccli-shim] controller returned no email for user — ' +
           'minted access token but skipping ~/.gccli/accounts.json write. ' +
           'Likely cause: user row missing in chat.users.',
       )
-      return
+      recordSuccess()
+      return true
     }
     try {
       await writeGccliAccounts(
@@ -285,18 +349,63 @@ export async function startGccliShim(args: {
       )
     } catch (err) {
       onError(err, 'write')
+      recordFailure(err)
+      return false
     }
+    recordSuccess()
+    return true
   }
 
-  await refresh()
-  const timer = setInterval(() => {
-    void refresh()
-  }, interval)
-  // Don't keep the event loop alive for this interval — the WS server
-  // is the actual "I want to be running" signal.
-  if (typeof timer.unref === 'function') timer.unref()
+  function recordSuccess(): void {
+    if (!active) return
+    active.lastSuccessAt = Date.now()
+    active.consecutiveFailures = 0
+    active.lastError = null
+  }
 
-  active = { userId: args.userId, timer }
+  function recordFailure(err: unknown): void {
+    if (!active) return
+    active.lastErrorAt = Date.now()
+    active.consecutiveFailures += 1
+    active.lastError = (err as Error)?.message ?? String(err)
+  }
+
+  // Self-rescheduling tick: pick the next delay based on the outcome of
+  // the just-completed refresh. setInterval was the old approach but
+  // couldn't shorten the gap after a failure — see issue #38.
+  const scheduleNext = (delayMs: number): void => {
+    const timer = setTimeout(() => {
+      void tick()
+    }, delayMs)
+    if (typeof timer.unref === 'function') timer.unref()
+    if (active) active.timer = timer
+  }
+
+  const tick = async (): Promise<void> => {
+    const ok = await refresh()
+    if (!active) return // stopGccliShim was called while we were awaiting
+    scheduleNext(ok ? intervalMs : errorRetryMs)
+  }
+
+  // Install state BEFORE the first refresh so record{Success,Failure}
+  // have a place to write. `timer` is a sentinel until scheduleNext runs.
+  active = {
+    userId: args.userId,
+    timer: setTimeout(() => {}, 0),
+    intervalMs,
+    errorRetryMs,
+    refresh: async () => {
+      await refresh()
+    },
+    lastSuccessAt: null,
+    lastErrorAt: null,
+    lastError: null,
+    consecutiveFailures: 0,
+  }
+  clearTimeout(active.timer)
+
+  const ok = await refresh()
+  if (active) scheduleNext(ok ? intervalMs : errorRetryMs)
 }
 
 /**
@@ -305,7 +414,7 @@ export async function startGccliShim(args: {
  */
 export function stopGccliShim(): void {
   if (active) {
-    clearInterval(active.timer)
+    clearTimeout(active.timer)
     active = null
   }
 }

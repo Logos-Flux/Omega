@@ -1,12 +1,27 @@
-import { listConversations, readConversation, WORKSPACE_ROOT } from './memory'
+import { listConversationsWithMeta, readConversation, WORKSPACE_ROOT } from './memory'
 import { ensureWorkspace } from './workspace'
 import { run as runEngine } from './engine'
 import type { IncomingSend, Outgoing } from './types'
-import { readSkill, scanSkills } from './skills'
+import { scanSkills } from './skills'
 import { deleteUpload, listUploads, readUpload, saveUpload, uploadPath } from './uploads'
 import { harnessJwtConfigured, tryVerify } from './jwt'
-import { readShimConfig, startGccliShim } from './gccli-shim'
+import { getShimStatus, readShimConfig, startGccliShim } from './gccli-shim'
+
+// QUAL-12 — process-level crash backstops. A harness that wedges on an
+// unhandled rejection leaves the user's WS dead with no signal; crash so the
+// session re-bootstraps cleanly on next /start.
+process.on('unhandledRejection', (reason) => {
+  console.error('[harness] unhandledRejection — exiting', reason)
+  process.exit(1)
+})
+process.on('uncaughtException', (err) => {
+  console.error('[harness] uncaughtException — exiting', err)
+  process.exit(1)
+})
 import { handleProfileRoute } from './profile-routes'
+import { handleSkillRoute } from './skills-routes'
+import { handleMemoryRoute } from './memory-routes'
+import { handlePersonaRoute } from './persona-routes'
 import {
   cancelTurn,
   rewindConversation,
@@ -115,7 +130,7 @@ if (!harnessJwtConfigured) {
 const SHIM_CONFIG = readShimConfig()
 if (!SHIM_CONFIG) {
   console.log(
-    '[harness] gccli shim disabled (CONTROLLER_BASE_URL / CONTROLLER_SERVICE_TOKEN not set)',
+    '[harness] gccli shim disabled (CONTROLLER_BASE_URL / CONTROLLER_MINT_TOKEN not set)',
   )
 } else {
   console.log('[harness] gccli shim configured (email comes from controller)')
@@ -144,7 +159,11 @@ const server = Bun.serve<WSData, never>({
 
     // Public endpoints — no auth.
     if (url.pathname === '/healthz') {
-      return jsonCors({ status: 'ok', workspace: WORKSPACE_ROOT }, undefined, req)
+      return jsonCors(
+        { status: 'ok', workspace: WORKSPACE_ROOT, gccliShim: getShimStatus() },
+        undefined,
+        req,
+      )
     }
     if (url.pathname === '/' || url.pathname === '/info') {
       return jsonCors({ name: 'Omega Pi Harness', version: '0.1.0' }, undefined, req)
@@ -171,40 +190,31 @@ const server = Bun.serve<WSData, never>({
       sid === claims.sessionId ? null : forbidden(req, 'session mismatch')
 
     if (url.pathname === '/conversations') {
-      return jsonCors({ ids: await listConversations() }, undefined, req)
+      // List EVERY session on this sprite with metadata (title/updatedAt/count)
+      // so the client can render a thread switcher and resume any past chat.
+      // Safe because a sprite is single-user: every jsonl belongs to the one
+      // user this valid token authenticates. (This supersedes the earlier
+      // SEC-07 single-session scoping, which made past chats unreachable — the
+      // gap this endpoint exists to close. A token still gates access; we just
+      // no longer pretend one user's sessions are foreign to each other.)
+      return jsonCors({ sessions: await listConversationsWithMeta() }, undefined, req)
     }
     if (url.pathname.startsWith('/conversations/')) {
-      const id = url.pathname.replace(/^\/conversations\//, '')
-      const bad = requireSid(id)
-      if (bad) return bad
+      const id = decodeURIComponent(url.pathname.replace(/^\/conversations\//, ''))
+      // Path-safety: ids are controller-minted UUIDs. Reject anything with a
+      // path separator or traversal so the id can't escape the conversations
+      // dir. Any well-formed id is loadable (single-user sprite — see above).
+      if (!/^[A-Za-z0-9_-]+$/.test(id)) return forbidden(req, 'invalid session id')
       return jsonCors({ id, lines: await readConversation(id) }, undefined, req)
     }
-    if (url.pathname === '/skills') {
-      const validate = url.searchParams.has('validate')
-      const { skills, issues } = await scanSkills()
-      if (validate) {
-        return jsonCors(
-          {
-            skills: skills.map((s) => ({ name: s.name, description: s.description })),
-            issues,
-          },
-          undefined,
-          req,
-        )
+    // Skill routes (list + enabled flags, read body, toggle on/off) —
+    // JWT-gated, sessionId-agnostic (skills are per-user). Logic lives in
+    // src/skills-routes.ts so it stays unit-testable without the server.
+    {
+      const skillResult = await handleSkillRoute(req)
+      if (skillResult) {
+        return jsonCors(skillResult.body, { status: skillResult.status }, req)
       }
-      return jsonCors(
-        {
-          skills: skills.map((s) => ({ name: s.name, description: s.description })),
-        },
-        undefined,
-        req,
-      )
-    }
-    if (url.pathname.startsWith('/skills/')) {
-      const name = url.pathname.replace(/^\/skills\//, '')
-      const body = await readSkill(name)
-      if (!body) return jsonCors({ error: 'not found' }, { status: 404 }, req)
-      return jsonCors({ name, body }, undefined, req)
     }
 
     // Binary file download endpoint — separate from /uploads/:id/:name
@@ -303,6 +313,25 @@ const server = Bun.serve<WSData, never>({
       }
     }
 
+    // Memory endpoints (#5) — the user-visible view/edit/clear of the
+    // persistent memory store the agent writes via write_memory. JWT-gated,
+    // per-user. Logic in src/memory-routes.ts for unit-testability.
+    {
+      const memoryResult = await handleMemoryRoute(req)
+      if (memoryResult) {
+        return jsonCors(memoryResult.body, { status: memoryResult.status }, req)
+      }
+    }
+
+    // Persona endpoints (#6) — list presets + switch the active one (slot-5
+    // system-prompt body). JWT-gated, per-user. Logic in persona-routes.ts.
+    {
+      const personaResult = await handlePersonaRoute(req)
+      if (personaResult) {
+        return jsonCors(personaResult.body, { status: personaResult.status }, req)
+      }
+    }
+
     if (
       url.pathname === '/ws' &&
       srv.upgrade(req, {
@@ -380,6 +409,24 @@ const server = Bun.serve<WSData, never>({
         return
       }
 
+      // WP-894 — application-level liveness ping. Browsers can't emit WS
+      // protocol pings from JS, so the frontend can't otherwise tell a
+      // half-dead socket (laptop sleep, network handoff) from a live one. A
+      // `{type:'ping'}` frame from the watchdog gets a `{type:'pong'}` here;
+      // if the client's ping goes unanswered it force-closes so the existing
+      // reconnect → resume path fires instead of stalling on "Thinking…".
+      // Echo any caller-supplied id so a future richer handshake can pair them.
+      if (msg.type === 'ping') {
+        const ping = msg as { id?: unknown }
+        ws.send(
+          JSON.stringify({
+            type: 'pong',
+            ...(typeof ping.id === 'string' ? { id: ping.id } : {}),
+          }),
+        )
+        return
+      }
+
       if (msg.type !== 'send') {
         ws.send(JSON.stringify({ type: 'error', message: `unknown type: ${msg.type}` }))
         return
@@ -394,18 +441,29 @@ const server = Bun.serve<WSData, never>({
         return
       }
 
-      // X.C.1 — register the turn's AbortController before kicking off
-      // engine.run so a cancel frame that arrives mid-stream can find
-      // and abort it. Use try/finally to guarantee the entry is
-      // removed regardless of how run() exits (success, error, or
-      // cancellation).
+      // X.C.1 — register the turn's AbortController + completion promise
+      // before kicking off engine.run so (a) a cancel frame mid-stream can
+      // find and abort it, and (b) a rewind can AWAIT the run unwinding
+      // before truncating (BUG-04). The `done` promise resolves only after
+      // run() — and its trailing partial-assistant append on abort — settles.
       const ctrl = new AbortController()
-      ws.data.inflight.set(send.id, ctrl)
+      const done = (async () => {
+        try {
+          await runEngine(send, emit, {
+            userId: ws.data.userId,
+            signal: ctrl.signal,
+          })
+        } catch (err) {
+          // BUG-03 — engine.run wraps its model loop, but a throw from the
+          // pre-model phase (PromptAssembler.build, conversation persist)
+          // would otherwise escape with no `error`/`done` frame, leaving the
+          // client stuck at "thinking" forever. Always emit a terminal frame.
+          emit({ type: 'error', id: send.id, message: (err as Error).message })
+        }
+      })()
+      ws.data.inflight.set(send.id, { ctrl, done })
       try {
-        await runEngine(send, emit, {
-          userId: ws.data.userId,
-          signal: ctrl.signal,
-        })
+        await done
       } finally {
         ws.data.inflight.delete(send.id)
       }
@@ -414,8 +472,8 @@ const server = Bun.serve<WSData, never>({
       // X.C.1 — abort anything still running on this connection.
       // Without this, a streamText loop could keep burning tokens
       // after the user navigated away.
-      for (const ctrl of ws.data.inflight.values()) {
-        ctrl.abort()
+      for (const entry of ws.data.inflight.values()) {
+        entry.ctrl.abort()
       }
       ws.data.inflight.clear()
     },

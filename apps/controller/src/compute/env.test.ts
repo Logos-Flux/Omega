@@ -14,6 +14,8 @@ const KEYS_TO_SAVE = [
   'ANTHROPIC_API_KEY',
   'GOOGLE_API_KEY',
   'PERPLEXITY_API_KEY',
+  'DEEPSEEK_API_KEY',
+  'IDEOGRAM_API_KEY',
   'HARNESS_JWT_SECRET',
   'RAG_API_URL',
   'RAG_SERVICE_TOKEN',
@@ -38,10 +40,14 @@ describe('dockerHarnessEnv', () => {
   it('forwards provider keys when they are set', () => {
     process.env.ANTHROPIC_API_KEY = 'sk-ant-test'
     process.env.GOOGLE_API_KEY = 'goog-test'
+    process.env.DEEPSEEK_API_KEY = 'sk-ds-test'
+    process.env.IDEOGRAM_API_KEY = 'ideo-test'
     process.env.HARNESS_JWT_SECRET = 'jwt-secret'
     const env = dockerHarnessEnv()
     expect(env.ANTHROPIC_API_KEY).toBe('sk-ant-test')
     expect(env.GOOGLE_API_KEY).toBe('goog-test')
+    expect(env.DEEPSEEK_API_KEY).toBe('sk-ds-test')
+    expect(env.IDEOGRAM_API_KEY).toBe('ideo-test')
     expect(env.HARNESS_JWT_SECRET).toBe('jwt-secret')
   })
 

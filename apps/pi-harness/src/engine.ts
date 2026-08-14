@@ -317,6 +317,16 @@ export async function run(
     return
   }
 
+  // BUG-02 — build the payload BEFORE persisting the user message. The
+  // assembler reads the conversation jsonl for slot 14 (history) and then
+  // appends the latest prompt as slot 15. If the current turn is already on
+  // disk when build() runs, slot 14 contains it AND slot 15 re-appends it,
+  // so every turn's final user message became "X\n\nX". Persisting after the
+  // build keeps history free of the in-flight turn; the message still lands
+  // before wrappedRun (and thus before any rewind frame), so the rewind
+  // anchor on msg.id is intact.
+  const payload = await PromptAssembler.build(invocation)
+
   // Persist the user message with the same id as the inbound frame so
   // the rewind handler (X.C.2) can use that id as a truncation anchor.
   // Both user and assistant entries carry the turn's id.
@@ -327,6 +337,5 @@ export async function run(
     id: msg.id,
   })
 
-  const payload = await PromptAssembler.build(invocation)
   await wrappedRun(payload, { msg, emit, signal: ctx.signal })
 }

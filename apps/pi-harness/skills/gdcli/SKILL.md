@@ -1,11 +1,18 @@
 ---
 name: gdcli
-description: Google Drive CLI for listing, searching, uploading, downloading, and sharing files and folders.
+description: "Google Drive CLI for the user's OWN My Drive only. CANNOT see Shared Drives or the knowledge base — for any KB / Shared-Drive file (reading full content, copying, commenting) use the drive_search / drive_fetch_file / drive_copy_file / drive_comment TOOLS instead, not this skill."
 ---
 
 # Google Drive CLI
 
-Command-line interface for Google Drive operations.
+Command-line interface for the user's personal **My Drive** only.
+
+> ⚠️ **gdcli cannot see Shared Drives** (it omits `supportsAllDrives`). The
+> knowledge base lives in a Shared Drive, so gdcli will NOT find KB files. To
+> read the full content of a KB/Shared-Drive file, copy it, or comment on it,
+> use the built-in **`drive_search` / `drive_fetch_file` / `drive_copy_file` /
+> `drive_comment` tools** — they are Shared-Drive aware. Use gdcli only for
+> files in the user's own My Drive.
 
 ## Installation
 

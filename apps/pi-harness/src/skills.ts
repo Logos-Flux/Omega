@@ -19,8 +19,8 @@ import { parseFrontMatter } from './lib/frontmatter'
 // parse callback that turns a `<dir>/SKILL.md` into a SkillMeta and
 // the public surface (listSkills/readSkill) that the assembler + WS
 // handlers call.
-const userSkillsDir = (): string => join(workspaceRoot(), 'skills')
-const BAKED_SKILLS_DIR = '/home/sprite/skills'
+export const userSkillsDir = (): string => join(workspaceRoot(), 'skills')
+export const BAKED_SKILLS_DIR = '/home/sprite/skills'
 
 export interface SkillMeta extends RegistryEntry {
   name: string
@@ -174,6 +174,15 @@ export function buildSkillsSystemMessage(skills: SkillMeta[]): string | null {
     'instructions for handling a specific kind of task. The full body of each',
     'skill is hidden by default — call the `read_skill` tool with the skill',
     'name to load its instructions on demand, then follow them.',
+    '',
+    'LOADING RULE (mandatory): before you respond, check the user\'s message',
+    'against every skill description below. If a skill\'s stated trigger phrase',
+    'appears in the user\'s message verbatim, you MUST call `read_skill` for that',
+    'skill and follow its instructions BEFORE answering — do not answer from',
+    'general knowledge when a matching skill exists. A description that says',
+    '"ALWAYS load before responding to X" is binding: treat X as a hard trigger.',
+    'When in doubt between answering directly and loading a matching skill, load',
+    'the skill.',
     '',
     '<available_skills>',
     ...lines,

@@ -1,7 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
-import { readWithLegacyKey } from './storage'
 
-export type ProviderId = 'anthropic' | 'google' | 'perplexity'
+export type ProviderId = 'anthropic' | 'google' | 'perplexity' | 'deepseek'
 export type Tier = 'basic' | 'advanced'
 
 export const PROVIDERS: Record<
@@ -20,9 +19,16 @@ export const PROVIDERS: Record<
     label: 'Perplexity',
     models: { basic: 'sonar', advanced: 'sonar-pro' },
   },
+  deepseek: {
+    // Advanced-only: both tiers resolve to deepseek-v4-pro. The basic
+    // deepseek-chat model defaulted to Chinese for casual prompts, so it's
+    // dropped — the tier toggle is a no-op for DeepSeek.
+    label: 'DeepSeek',
+    models: { basic: 'deepseek-v4-pro', advanced: 'deepseek-v4-pro' },
+  },
 }
 
-export const DEFAULT_PROVIDER: ProviderId = 'perplexity'
+export const DEFAULT_PROVIDER: ProviderId = 'anthropic'
 export const DEFAULT_TIER: Tier = 'advanced'
 
 /**
@@ -39,7 +45,6 @@ export function tierForModel(provider: ProviderId, model: string): Tier | null {
 }
 
 const STORAGE_KEY = 'omega.chat.provider'
-const LEGACY_STORAGE_KEY = '52l.chat.provider'
 
 interface Selection {
   provider: ProviderId
@@ -55,7 +60,7 @@ interface SelectionContextValue extends Selection {
 function readStoredSelection(): Selection {
   if (typeof window === 'undefined') return { provider: DEFAULT_PROVIDER, tier: DEFAULT_TIER }
   try {
-    const raw = readWithLegacyKey(window.localStorage, STORAGE_KEY, LEGACY_STORAGE_KEY)
+    const raw = window.localStorage.getItem(STORAGE_KEY)
     if (!raw) return { provider: DEFAULT_PROVIDER, tier: DEFAULT_TIER }
     const parsed = JSON.parse(raw) as Partial<Selection>
     const provider = parsed.provider && parsed.provider in PROVIDERS ? parsed.provider : DEFAULT_PROVIDER

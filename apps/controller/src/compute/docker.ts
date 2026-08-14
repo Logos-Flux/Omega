@@ -50,6 +50,20 @@ export interface DockerProviderOptions {
    */
   publicUrl?: string
   /**
+   * Browser-facing base URL for *per-session* harness routing. When set, the
+   * URL handed to the browser is `${browserUrlBase}/harness/<containerName>`,
+   * which a reverse proxy (Caddy `/harness/<name>/*`) routes to that specific
+   * harness container over the shared docker network. Unlike `publicUrl` this
+   * scales to many concurrent users — each container gets a distinct path —
+   * and is the remote-access fix: without it the browser receives
+   * `http://localhost:<published-port>`, unreachable over remote HTTPS
+   * (`localhost` = the user's machine; `ws:` from an `https:` origin is
+   * mixed-content blocked). The controller still reaches the harness
+   * internally by container DNS, so only the client URL changes. Takes
+   * precedence over `publicUrl` and the `hostUrlBase:<port>` composition.
+   */
+  browserUrlBase?: string
+  /**
    * Fixed host port for the harness's `8080/tcp` binding. Default: empty
    * string, which lets Docker pick a random port. Set this when fronting the
    * harness with a reverse proxy that expects a known upstream port.
@@ -75,6 +89,16 @@ export function composeHarnessUrl(opts: {
   return `${opts.hostUrlBase}:${opts.hostPort}`
 }
 
+/**
+ * Compose the per-session browser URL for a harness container behind a
+ * path-routing reverse proxy: `${browserUrlBase}/harness/<name>`. The base's
+ * trailing slashes are trimmed so the result never doubles up. Exposed for
+ * unit tests. See `DockerProviderOptions.browserUrlBase`.
+ */
+export function composeBrowserHarnessUrl(browserUrlBase: string, name: string): string {
+  return `${browserUrlBase.replace(/\/+$/, '')}/harness/${name}`
+}
+
 export class DockerProvider implements ComputeProvider {
   readonly name = 'docker'
   private readonly image: string
@@ -82,6 +106,7 @@ export class DockerProvider implements ComputeProvider {
   private readonly network: string | undefined
   private readonly hostUrlBase: string
   private readonly publicUrl: string | undefined
+  private readonly browserUrlBase: string | undefined
   private readonly hostPort: string
   private readonly socketPath: string
 
@@ -92,6 +117,7 @@ export class DockerProvider implements ComputeProvider {
     this.network = opts.network
     this.hostUrlBase = opts.hostUrlBase ?? 'http://localhost'
     this.publicUrl = opts.publicUrl
+    this.browserUrlBase = opts.browserUrlBase?.replace(/\/+$/, '')
     this.hostPort = opts.hostPort ?? ''
     this.socketPath = opts.socketPath ?? '/var/run/docker.sock'
   }
@@ -171,6 +197,12 @@ export class DockerProvider implements ComputeProvider {
   }
 
   private async urlFor(name: string): Promise<string> {
+    // Per-session browser routing (remote-access fix): hand the browser a
+    // stable reverse-proxied path that Caddy maps to THIS harness container.
+    // Skips the inspect/published-port dance entirely — the browser never
+    // needs the host port, and the controller reaches the harness internally
+    // by container DNS on the shared network.
+    if (this.browserUrlBase) return composeBrowserHarnessUrl(this.browserUrlBase, name)
     if (this.publicUrl) return this.publicUrl
     const c = await this.inspect(name)
     if (!c) throw new Error(`urlFor: container ${name} disappeared`)

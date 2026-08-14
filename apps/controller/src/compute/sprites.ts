@@ -71,11 +71,35 @@ export class SpritesProvider implements ComputeProvider {
     if (!res.ok) throw new Error(`create sprite ${name} failed: ${res.status} ${await res.text()}`)
     const created = (await res.json()) as SpriteRecord
     if (this.defaultUrlAuth !== 'sprite' && created.url_settings?.auth !== this.defaultUrlAuth) {
-      await this.updateUrlAuth(name, this.defaultUrlAuth).catch((e) =>
-        console.warn(`[sprites] url-auth update failed for ${name}`, e),
-      )
+      // Flip auth at creation time so the sprite is browser-reachable even if a
+      // later bootstrap step fails. Retry: a sprite can briefly 404 on the PATCH
+      // immediately after POST returns. Best-effort (the bootstrap flips again
+      // as a backup), but loud if every attempt fails.
+      await this.setUrlAuthWithRetry(name, this.defaultUrlAuth)
     }
     return created
+  }
+
+  private async setUrlAuthWithRetry(
+    name: string,
+    auth: 'sprite' | 'public',
+    attempts = 3,
+  ): Promise<void> {
+    for (let i = 1; i <= attempts; i++) {
+      try {
+        await this.updateUrlAuth(name, auth)
+        return
+      } catch (e) {
+        if (i === attempts) {
+          console.warn(
+            `[sprites] url-auth ${auth} for ${name} failed after ${attempts} attempts; bootstrap flip will retry`,
+            e,
+          )
+          return
+        }
+        await new Promise((r) => setTimeout(r, 400 * i))
+      }
+    }
   }
 
   private async updateUrlAuth(name: string, auth: 'sprite' | 'public'): Promise<void> {

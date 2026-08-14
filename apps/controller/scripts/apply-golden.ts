@@ -26,6 +26,7 @@ interface Manifest {
   npm_globals: { name: string; version: string; binary: string }[]
   harness_bundle: { path: string; remote_path: string; sha256: string }
   default_skills?: { local_path: string; remote_path: string }
+  default_personas?: { local_path: string; remote_path: string }
   fs_setup: { path: string; mode: string; owner: string; comment?: string }[]
 }
 
@@ -187,18 +188,22 @@ for (const f of manifest.fs_setup) {
   console.log(`  ${f.path}  mode=${f.mode}  owner=${f.owner}`)
 }
 
-// 4.5. default_skills — tar local skills tree, upload, extract on the
-// sprite. Replaces the entire baked dir (so removed skills actually
-// disappear). User skills in /workspace/skills/ are untouched.
-if (manifest.default_skills) {
-  const ds = manifest.default_skills
-  console.log('[apply] default skills…')
-  const localSkills = isAbsolute(ds.local_path) ? ds.local_path : join(manifestDir, ds.local_path)
-  const tarLocal = `/tmp/skills-${version}.tar`
-  const tarRemote = '/tmp/skills.tar'
-  const tar = spawnSync('tar', ['-cf', tarLocal, '-C', localSkills, '.'], { stdio: 'inherit' })
+// 4.5. default_skills / default_personas — tar a local tree, upload, and
+// extract it over the baked remote dir. Replaces the entire dir (so
+// removed entries actually disappear); the user-mutable copies under
+// /workspace/{skills,personas}/ are untouched. Both registries follow the
+// identical baked-dir convention, so they share one installer.
+function installDefaultTree(
+  spec: { local_path: string; remote_path: string },
+  kind: string,
+): void {
+  console.log(`[apply] default ${kind}…`)
+  const localTree = isAbsolute(spec.local_path) ? spec.local_path : join(manifestDir, spec.local_path)
+  const tarLocal = `/tmp/${kind}-${version}.tar`
+  const tarRemote = `/tmp/${kind}.tar`
+  const tar = spawnSync('tar', ['-cf', tarLocal, '-C', localTree, '.'], { stdio: 'inherit' })
   if (tar.status !== 0) {
-    console.error('[apply] FAIL: local tar')
+    console.error(`[apply] FAIL: local tar (${kind})`)
     process.exit(2)
   }
   const up = spawnSync(
@@ -207,17 +212,19 @@ if (manifest.default_skills) {
     { stdio: 'inherit' },
   )
   if (up.status !== 0) {
-    console.error('[apply] FAIL: skills tar upload')
+    console.error(`[apply] FAIL: ${kind} tar upload`)
     process.exit(2)
   }
   mustShell(
-    `sudo rm -rf ${ds.remote_path} && sudo mkdir -p ${ds.remote_path} && sudo tar -xf ${tarRemote} -C ${ds.remote_path} && sudo chown -R sprite:sprite ${ds.remote_path} && sudo chmod -R a+rX ${ds.remote_path} && rm -f ${tarRemote}`,
-    'skills extract',
+    `sudo rm -rf ${spec.remote_path} && sudo mkdir -p ${spec.remote_path} && sudo tar -xf ${tarRemote} -C ${spec.remote_path} && sudo chown -R sprite:sprite ${spec.remote_path} && sudo chmod -R a+rX ${spec.remote_path} && rm -f ${tarRemote}`,
+    `${kind} extract`,
   )
-  // Print what landed.
-  const listing = mustShell(`ls ${ds.remote_path}`, 'skills listing').trim()
-  console.log(`  ${ds.remote_path}  ←  ${listing.replace(/\n/g, ' ')}`)
+  const listing = mustShell(`ls ${spec.remote_path}`, `${kind} listing`).trim()
+  console.log(`  ${spec.remote_path}  ←  ${listing.replace(/\n/g, ' ')}`)
 }
+
+if (manifest.default_skills) installDefaultTree(manifest.default_skills, 'skills')
+if (manifest.default_personas) installDefaultTree(manifest.default_personas, 'personas')
 
 // 5. version stamp — last so /etc/52l/version.json reflects the version
 //    only when every previous step has succeeded. Uses the CLI `version`

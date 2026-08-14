@@ -42,7 +42,7 @@ export function ChatDrawer() {
         <Accordion
           label="Chat"
           icon={<MessageSquare className="h-3 w-3" />}
-          count={agentMode ? undefined : threads.length}
+          count={threads.length}
           open={openSection === 'chat'}
           onToggle={() => toggle('chat')}
         >
@@ -55,15 +55,12 @@ export function ChatDrawer() {
               <Plus className="h-3 w-3" />
               New chat
             </button>
-            {agentMode ? (
-              <SessionStatus />
-            ) : (
-              <ThreadsList
-                threads={threads}
-                activeThreadId={activeThreadId}
-                selectThread={selectThread}
-              />
-            )}
+            {agentMode && <SessionStatus />}
+            <ThreadsList
+              threads={threads}
+              activeThreadId={activeThreadId}
+              selectThread={selectThread}
+            />
           </div>
         </Accordion>
 
@@ -112,7 +109,7 @@ export function ChatDrawer() {
 
       <div className="border-t border-white/10 px-4 py-3">
         <p className="text-[10px] text-white/30">
-          {agentMode ? 'harness • shared sprite (testing)' : 'chat-frontend v0.1.0'}
+          {agentMode ? 'agent mode • pi harness' : 'chat-frontend v0.1.0'}
         </p>
       </div>
     </div>
@@ -194,9 +191,10 @@ function ThreadsList({
   )
 }
 
-// In agent mode threads live as jsonl in /workspace/conversations/ on
-// the harness side (not in chat-api's Postgres), so the Chat accordion
-// shows the harness session status instead of the threads list.
+// In agent mode threads live as jsonl in /workspace/conversations/ on the
+// harness side (not in chat-api's Postgres). The Chat accordion now shows the
+// harness connection status (this component) ABOVE the thread switcher, which
+// is populated from the harness `/conversations` listing in both modes.
 function SessionStatus() {
   const { session } = useHarnessSession()
   if (!session) {
@@ -300,7 +298,10 @@ function UploadsList() {
         />
       </label>
       {uploadError && (
-        <p className="rounded border border-red-500/40 bg-red-500/5 px-2 py-1 text-[10px] text-red-400">
+        <p
+          role="alert"
+          className="rounded border border-t-error/40 bg-t-error/5 px-2 py-1 text-[10px] text-t-error"
+        >
           {uploadError}
         </p>
       )}
@@ -352,7 +353,7 @@ function UploadsList() {
                   disabled={isPending}
                   aria-label={`Remove ${u.filename}`}
                   title={`Remove ${u.filename}`}
-                  className="flex shrink-0 items-center justify-center px-1.5 text-white/30 transition-colors hover:text-red-400 disabled:opacity-50"
+                  className="flex shrink-0 items-center justify-center px-1.5 text-white/30 transition-colors hover:text-t-error disabled:opacity-50"
                 >
                   <X className="h-3 w-3" />
                 </button>

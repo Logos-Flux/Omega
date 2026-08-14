@@ -10,10 +10,8 @@
 // the rest of the codebase can already reference them and we can spot
 // any caller that thinks they're live before the relevant phase lands.
 
-import { readFileSync, existsSync } from 'node:fs'
-import { join } from 'node:path'
 import { DEFAULT_PROVIDER, DEFAULT_MODEL, isValidSelection, type ProviderId } from './providers'
-import { WORKSPACE_ROOT } from './memory'
+import { readStateSync } from './state'
 import type { IncomingSend, Invocation } from './types'
 
 export class NotImplementedError extends Error {
@@ -36,37 +34,20 @@ const USER_DEFAULT_BUDGET = {} as const
 const USER_DEFAULT_POLICY = {} as const
 
 /**
- * The active persona/soul names. Phase I has exactly one of each;
- * resolution from user state lands in V (soul) and VI (persona).
+ * Active soul name. Phase I has exactly one; resolution from user state
+ * lands in V. (Active persona now resolves from state.json via
+ * readStateSync() — see resolveActivePersona below.)
  */
-const FALLBACK_PERSONA = 'default'
 const PHASE_I_SOUL = 'default'
 
 /**
- * Resolve the active persona name from /workspace/state.json, with a
- * static fallback so the dispatcher works even on a brand-new sprite
- * where ensureWorkspace hasn't run yet (vanishingly rare — the harness
- * boot order calls ensureWorkspace before the first request — but
- * cheap to be defensive about).
- *
- * Synchronous filesystem read because the dispatcher's other inputs
- * are sync-only and an async hop here would force every caller to
- * become async-aware. state.json is a few bytes; the read is
- * negligible.
+ * Resolve the active persona name from /workspace/state.json. Delegates
+ * to the shared state module (readStateSync), which is forgiving — a
+ * missing/malformed file resolves to the 'default' persona rather than
+ * throwing, so a bad state.json never takes the dispatcher down.
  */
 function resolveActivePersona(): string {
-  const path = join(WORKSPACE_ROOT, 'state.json')
-  if (!existsSync(path)) return FALLBACK_PERSONA
-  try {
-    const text = readFileSync(path, 'utf8')
-    const parsed = JSON.parse(text) as { activePersona?: unknown }
-    if (typeof parsed.activePersona === 'string' && parsed.activePersona.length > 0) {
-      return parsed.activePersona
-    }
-  } catch {
-    // Malformed state.json shouldn't take the dispatcher down.
-  }
-  return FALLBACK_PERSONA
+  return readStateSync().activePersona
 }
 
 /**
@@ -99,6 +80,7 @@ export function dispatchUser(
     prompt: msg.content,
     provider,
     model: modelInput,
+    timezone: msg.timezone,
     budget: { ...USER_DEFAULT_BUDGET },
     policy: { ...USER_DEFAULT_POLICY },
     delivery: 'ws',

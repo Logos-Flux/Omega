@@ -16,6 +16,6 @@
   ],
   "scripts": {
     "build": "bun run --cwd apps/chat-api build && bun run --cwd apps/controller build && bun run --cwd apps/chat-frontend build && bun run --cwd apps/rag-api/api build && bun run --cwd apps/rag-api/ingest build && bun run --cwd apps/pi-harness build",
-    "type-check": "bun run --cwd apps/chat-api type-check && bun run --cwd apps/controller type-check && bun run --cwd apps/chat-frontend type-check"
+    "type-check": "bun run --cwd apps/chat-api type-check && bun run --cwd apps/controller type-check && bun run --cwd apps/chat-frontend type-check && bun run --cwd apps/rag-api/api type-check && bun run --cwd apps/rag-api/ingest type-check && bun run --cwd apps/pi-harness type-check"
   }
 }

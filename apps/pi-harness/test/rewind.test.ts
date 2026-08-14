@@ -142,8 +142,8 @@ describe('rewindConversation (X.C.2)', () => {
     const inflight: InFlightTurns = new Map()
     const a = new AbortController()
     const b = new AbortController()
-    inflight.set('turn-A', a)
-    inflight.set('turn-B', b)
+    inflight.set('turn-A', { ctrl: a, done: Promise.resolve() })
+    inflight.set('turn-B', { ctrl: b, done: Promise.resolve() })
 
     const result = await rewindConversation(SESSION, 'turn-2', inflight)
     expect(result.ok).toBe(true)
@@ -160,7 +160,7 @@ describe('rewindConversation (X.C.2)', () => {
     // shouldn't be the one keeping a stalled stream alive.
     const inflight: InFlightTurns = new Map()
     const ctrl = new AbortController()
-    inflight.set('turn-A', ctrl)
+    inflight.set('turn-A', { ctrl, done: Promise.resolve() })
     const result = await rewindConversation(
       SESSION,
       'no-such-turn',

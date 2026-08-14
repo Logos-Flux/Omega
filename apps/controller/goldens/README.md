@@ -116,15 +116,27 @@ disappear from running sprites. User-authored skills under
    INSERT INTO pi.golden_images (version, manifest_uri, manifest_sha, notes, released_to)
    VALUES (
      '1.0.1',
-     'apps/controller/goldens/1.0.1/manifest.json',
+     'file://goldens/1.0.1/manifest.json',  -- MUST be file:// (see below)
      '<sha256 of the manifest.json file itself>',
      'Bump gccli to 0.1.3, add note-taking-v2 skill.',
      ARRAY['alpha']                       -- start in alpha; promote later
    );
    ```
 
-   `manifest_uri` is a content pointer — operators using object storage
-   instead of an in-repo path can put an `https://` URL here.
+   ⚠️ **`manifest_uri` MUST use the `file://` scheme**, relative to the
+   controller's runtime cwd (`process.cwd()` = `/app` in the deployed image).
+   `bootstrap.ts::resolveManifestPath` ONLY accepts `file://` (or an absolute
+   path after it) and THROWS `unsupported manifest_uri scheme` on anything else
+   — which 500s every `/api/session/start` for users on that channel until the
+   row is fixed. The controller build bakes `fly/goldens/<v>/` into
+   `/app/goldens/<v>/`, so the correct value is **`file://goldens/<v>/manifest.json`**
+   (NOT `apps/controller/goldens/...` — that bare path was the format that broke
+   golden 1.0.8 on 2026-06-11). Operators using object storage may instead put an
+   `https://` URL here only if resolveManifestPath is extended to accept it.
+
+   After registering a golden, ALWAYS verify a real `/api/session/start`
+   re-bootstrap succeeds (not just that the row + bundle exist) — a bad
+   manifest_uri only surfaces at bootstrap time.
 
 4. **Apply to a test sprite.**
 

@@ -32,7 +32,20 @@ export function Thread() {
       className="flex h-full flex-col bg-t-deep"
       style={{ ['--thread-max-width' as string]: '40rem' }}
     >
-      <ThreadPrimitive.Viewport className="flex h-full flex-col items-center overflow-y-auto px-4 pt-6">
+      <ThreadPrimitive.Viewport
+        className="flex h-full flex-col items-center overflow-y-auto px-4 pt-6"
+        // Disables a sticky-bottom regression in assistant-ui's
+        // useThreadViewportAutoScroll: runStart sets an internal
+        // `scrollingToBottomBehaviorRef = "auto"` that only clears when
+        // the viewport reaches isAtBottom. If the user scrolls up
+        // during streaming the ref stays set, and any later resize
+        // event — e.g. an <ActionBar> mounting on message hover —
+        // fires scrollToBottom("auto") via the still-set ref,
+        // yanking the page back down on mouse-over. Disabling this
+        // prop falls back to the isAtBottom-driven path, which
+        // correctly stops following once the user scrolls away.
+        scrollToBottomOnRunStart={false}
+      >
         <ThreadWelcome />
         <ThreadPrimitive.Messages
           components={{
@@ -165,7 +178,7 @@ function UserMessage() {
   return (
     <MessagePrimitive.Root className="grid w-full max-w-[var(--thread-max-width)] auto-rows-auto grid-cols-[minmax(72px,1fr)_auto] gap-y-2 py-3">
       <UserActionBar />
-      <div className="col-start-2 max-w-[80%] rounded-md border border-t-border bg-t-surface px-4 py-2 text-sm text-t-bright break-words">
+      <div className="col-start-2 max-w-[calc(var(--thread-max-width)*0.8)] rounded-md border border-t-border bg-t-surface px-4 py-2 text-sm text-t-bright break-words">
         <MessagePrimitive.Parts />
       </div>
     </MessagePrimitive.Root>

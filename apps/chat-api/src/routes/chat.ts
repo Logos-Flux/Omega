@@ -3,11 +3,19 @@ import { stepCountIs, streamText, type ModelMessage, type ToolSet, type UIMessag
 import { getPool, hasDatabase } from '../lib/db'
 import { requireSession } from '../middleware/session'
 import { PROVIDERS, DEFAULT_PROVIDER, DEFAULT_MODEL, isValidSelection, toolsForProvider, type ProviderId } from '../lib/providers'
-import { resolveThreadLock } from '../lib/thread-lock'
+import { resolveThreadLock, ThreadOwnershipError } from '../lib/thread-lock'
 
 export const chatRoutes = new Hono()
 
 chatRoutes.use('*', requireSession)
+
+// Minimal, provider-neutral system prompt. Primary purpose: pin the response
+// language. DeepSeek (deepseek-chat in particular) otherwise answers in
+// Chinese for many prompts — it has no inherent bias toward the user's
+// language the way Claude/Gemini do. A one-line steer fixes it without
+// imposing a persona on the other providers.
+const CHAT_SYSTEM_PROMPT =
+  'Respond in the same language the user writes in. When their language is unclear, mixed, or the message is too short to tell, default to English. Never switch languages unprompted.'
 
 interface ChatRequestBody {
   id?: string
@@ -65,7 +73,13 @@ async function persistMessage(
 
 chatRoutes.post('/', async (c) => {
   const user = c.get('user')
-  const body = (await c.req.json()) as ChatRequestBody
+  // QUAL-10 — guard the body parse and shape so a malformed request is a 400,
+  // not an unhandled throw → 500. `[...body.messages]` below would explode on
+  // a missing/non-array `messages`.
+  const body = (await c.req.json().catch(() => null)) as ChatRequestBody | null
+  if (!body || typeof body !== 'object' || !Array.isArray(body.messages) || body.messages.length === 0) {
+    return c.json({ error: 'messages must be a non-empty array' }, 400)
+  }
 
   const requestedProvider = (body.provider ?? DEFAULT_PROVIDER) as ProviderId
   const requestedModel = body.model ?? DEFAULT_MODEL
@@ -93,6 +107,11 @@ chatRoutes.post('/', async (c) => {
         firstUserMessage: userText,
       })
     } catch (e) {
+      // BUG-12 — a foreign-owned thread id must 404 and must NOT have the
+      // attacker's messages persisted against the victim's thread.
+      if (e instanceof ThreadOwnershipError) {
+        return c.json({ error: 'thread not found' }, 404)
+      }
       console.error('[chat] resolveThreadLock failed', e)
     }
   }
@@ -119,6 +138,7 @@ chatRoutes.post('/', async (c) => {
   const tools = toolsForProvider(provider, { userId: user.id })
   const result = streamText({
     model: PROVIDERS[provider].resolve(model),
+    system: CHAT_SYSTEM_PROMPT,
     messages: modelMessages,
     ...(tools ? { tools: tools as ToolSet, stopWhen: stepCountIs(5) } : {}),
     onFinish: async ({ text, steps, response }) => {
@@ -138,7 +158,13 @@ chatRoutes.post('/', async (c) => {
   // Surface the lock state to the client. Frontend reads these via a custom
   // `fetch` wrapper on the AI SDK transport to render the cache-invalidation
   // indicator and to know what the canonical lock is for the active thread.
-  const response = result.toUIMessageStreamResponse({ sendSources: true })
+  //
+  // sendReasoning:false — reasoning models (e.g. deepseek-v4-pro) stream a
+  // separate chain-of-thought that the SDK exposes as reasoning parts. We
+  // don't surface raw CoT in this chat product; without this it renders as
+  // the answer — and DeepSeek frequently reasons in Chinese, so the user
+  // sees a Chinese "response" even though the final answer is English.
+  const response = result.toUIMessageStreamResponse({ sendSources: true, sendReasoning: false })
   response.headers.set('X-Locked-Provider', provider)
   response.headers.set('X-Locked-Model', model)
   response.headers.set('X-Lock-Mismatched', lock.mismatched ? '1' : '0')

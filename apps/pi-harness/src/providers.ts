@@ -1,13 +1,15 @@
 import { createAnthropic } from '@ai-sdk/anthropic'
+import { createDeepSeek } from '@ai-sdk/deepseek'
 import { createGoogleGenerativeAI } from '@ai-sdk/google'
 import { createPerplexity } from '@ai-sdk/perplexity'
 import type { LanguageModel } from 'ai'
 
-export type ProviderId = 'anthropic' | 'google' | 'perplexity'
+export type ProviderId = 'anthropic' | 'google' | 'perplexity' | 'deepseek'
 
 const anthropic = createAnthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 const google = createGoogleGenerativeAI({ apiKey: process.env.GOOGLE_API_KEY })
 const perplexity = createPerplexity({ apiKey: process.env.PERPLEXITY_API_KEY })
+const deepseek = createDeepSeek({ apiKey: process.env.DEEPSEEK_API_KEY })
 
 export const PROVIDERS = {
   anthropic: {
@@ -24,6 +26,13 @@ export const PROVIDERS = {
     label: 'Perplexity',
     models: ['sonar-pro', 'sonar'] as const,
     resolve: (model: string): LanguageModel => perplexity(model),
+  },
+  deepseek: {
+    // Advanced-only — see chat-api providers.ts. deepseek-v4-pro only;
+    // the basic deepseek-chat tier was dropped (defaulted to Chinese).
+    label: 'DeepSeek',
+    models: ['deepseek-v4-pro'] as const,
+    resolve: (model: string): LanguageModel => deepseek(model),
   },
 } satisfies Record<
   ProviderId,

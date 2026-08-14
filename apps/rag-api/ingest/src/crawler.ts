@@ -30,7 +30,7 @@ interface DatasetRow {
 // RAG_SOURCE in source.ts. Cross-source bookkeeping (e.g. dropping
 // filesystem-only access rows when running a drive crawl) is scoped by
 // `source.kind` so a single-source crawl only manages its own rows.
-export async function crawlForUser(_jobId: string, userId: string): Promise<{ files_seen: number; files_changed: number }> {
+export async function crawlForUser(jobId: string, userId: string): Promise<{ files_seen: number; files_changed: number; files_failed: number }> {
   const pool = getPool()
 
   const userRes = await pool.query<UserRow>(
@@ -58,6 +58,16 @@ export async function crawlForUser(_jobId: string, userId: string): Promise<{ fi
   let filesFailed = 0
   const seenSourceIds: string[] = []
   const newDocIds: string[] = []
+
+  // BUG-09 — heartbeat lease. Bump sync_jobs.heartbeat_at periodically so the
+  // reaper (which compares COALESCE(heartbeat_at, started_at) to the timeout)
+  // never falsely reaps a genuinely-long-but-alive crawl. Stamp one up front
+  // so a slow first file doesn't start the clock at started_at.
+  let sinceHeartbeat = 0
+  const HEARTBEAT_EVERY = 10
+  const beat = () =>
+    pool.query(`UPDATE rag.sync_jobs SET heartbeat_at = NOW() WHERE id = $1`, [jobId])
+  await beat()
 
   for (const file of files) {
     // Per-file failures (transient I/O 5xx, RAGFlow upload rejection,
@@ -93,6 +103,11 @@ export async function crawlForUser(_jobId: string, userId: string): Promise<{ fi
        ON CONFLICT (user_id, file_id) DO UPDATE SET last_checked_at = NOW()`,
       [user.id, user.tenant_id, source.kind, file.id],
     )
+
+    if (++sinceHeartbeat >= HEARTBEAT_EVERY) {
+      sinceHeartbeat = 0
+      await beat()
+    }
   }
   if (filesFailed > 0) {
     console.warn(`[crawler] ${filesFailed}/${files.length} files failed for user ${user.chat_user_id}`)
@@ -134,7 +149,7 @@ export async function crawlForUser(_jobId: string, userId: string): Promise<{ fi
     await parseDocuments(dataset.ragflow_dataset_id, newDocIds)
   }
 
-  return { files_seen: files.length, files_changed: filesChanged }
+  return { files_seen: files.length, files_changed: filesChanged, files_failed: filesFailed }
 }
 
 async function ingestOne(

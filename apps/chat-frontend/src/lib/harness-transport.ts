@@ -39,6 +39,8 @@ import type {
 } from 'ai'
 
 import {
+  WS_KEEPALIVE_INTERVAL_MS,
+  WS_KEEPALIVE_TIMEOUT_MS,
   WS_RETRY_DELAYS_MS,
   summarizeToolInput,
   uploadDownloadUrl,
@@ -60,6 +62,13 @@ export interface HarnessTransportOptions {
    * recreate the transport.
    */
   getProviderSelection: () => ProviderSelection
+  /**
+   * Resume a specific past session instead of starting a fresh one. The
+   * agent-mode thread switcher sets this; the controller validates ownership
+   * and mints a token scoped to it, so the harness loads that session's jsonl
+   * history. Undefined → a new session (the default).
+   */
+  resumeSessionId?: string
 }
 
 interface ActiveSession {
@@ -94,6 +103,8 @@ export type HarnessPhase =
   | { kind: 'thinking' }
   | { kind: 'running-tool'; tool: string; hint?: string }
   | { kind: 'streaming' }
+  // UX-07 — WS dropped mid-session; the next send reconnects automatically.
+  | { kind: 'disconnected' }
 
 export type HarnessPhaseListener = (phase: HarnessPhase) => void
 
@@ -106,9 +117,12 @@ interface InFlight {
   id: string
   controller: ReadableStreamDefaultController<UIMessageChunk>
   textStarted: boolean
-  /** Maps harness tool `name` → toolCallId. The harness doesn't give us
-   *  toolCallIds, so we mint one per (id, name) and reuse it on `done`. */
-  toolCallIds: Map<string, string>
+  /** BUG-26 — per-tool-name FIFO queue of minted toolCallIds. The harness
+   *  doesn't give us a per-call id, so a key based on name+JSON(input) made
+   *  two identical calls in one turn collide → one chip span an eternal
+   *  spinner. A FIFO queue (push on `start`, shift on `done`) matches them
+   *  in call order without needing the input in the key. */
+  toolCallIds: Map<string, string[]>
   /** Snapshot of upload filenames at the time this turn started. On
    *  `done` we fetch /uploads again, diff against this snapshot, and
    *  emit a `data-file` chunk for each new file so the UI can render a
@@ -133,6 +147,7 @@ export class HarnessTransport<UI_MESSAGE extends UIMessage = UIMessage>
 {
   private apiBase: string
   private getProviderSelection: () => ProviderSelection
+  private resumeSessionId?: string
   private session: ActiveSession | null = null
   private sessionPromise: Promise<ActiveSession> | null = null
   private destroyed = false
@@ -141,9 +156,26 @@ export class HarnessTransport<UI_MESSAGE extends UIMessage = UIMessage>
   private phase: HarnessPhase = { kind: 'idle' }
   private phaseListeners = new Set<HarnessPhaseListener>()
 
+  // WP-894 — keepalive watchdog state. `keepaliveTimer` ticks every
+  // WS_KEEPALIVE_INTERVAL_MS while a WS is open. `lastInboundAt` is bumped on
+  // every received frame (delta/tool/done/hello/pong); a tick only sends a
+  // ping when the connection has been quiet longer than the interval, so
+  // active streaming never spams pings. `pingSentAt` tracks an outstanding,
+  // unanswered ping; if it ages past WS_KEEPALIVE_TIMEOUT_MS the socket is
+  // half-dead and we force-close to trigger reconnect + resume.
+  private keepaliveTimer: ReturnType<typeof setInterval> | null = null
+  private lastInboundAt = 0
+  private pingSentAt = 0
+  // WP-894 — seeded from the harness-utils tunables (single source of truth).
+  // Instance fields (rather than the constants directly) so the watchdog is
+  // unit-testable at millisecond cadence instead of waiting 25s per tick.
+  private keepaliveIntervalMs = WS_KEEPALIVE_INTERVAL_MS
+  private keepaliveTimeoutMs = WS_KEEPALIVE_TIMEOUT_MS
+
   constructor(options: HarnessTransportOptions) {
     this.apiBase = options.apiBase
     this.getProviderSelection = options.getProviderSelection
+    this.resumeSessionId = options.resumeSessionId
   }
 
   /** Current activity phase. */
@@ -187,11 +219,35 @@ export class HarnessTransport<UI_MESSAGE extends UIMessage = UIMessage>
     }
   }
 
+  /**
+   * Proactively open the harness session (provision sprite if needed,
+   * WS connect, JWT mint) so the UI can show "connected" state and
+   * uploads work before the user sends their first message.
+   *
+   * Idempotent: if the session is already open, returns immediately.
+   * If an open is in flight, returns the same promise. Errors propagate
+   * to the caller — the UI surfaces them via the phase stream that
+   * openSession() drives, so callers can usually ignore the rejection.
+   */
+  async connect(): Promise<void> {
+    await this.ensureSession()
+    // openSession() drives the phase to `connecting` right before the WS
+    // dial and relies on the caller's *next* action to move it on — the
+    // send path immediately flips to `thinking` after the frame goes out.
+    // Eager connect has no such follow-up, so without this the phase is
+    // stranded at `connecting` and the indicator shows "Connecting to
+    // sprite" forever even though the WS opened fine. Land on `idle`
+    // ("Ready") once connected, unless a turn raced in (don't clobber
+    // thinking/streaming).
+    if (this.inFlight.size === 0) this.setPhase({ kind: 'idle' })
+  }
+
   /** Tear down: close the WS, fail any in-flight turns. Called by the
    *  parent component when toggling out of Agent Mode (a new transport
    *  will be constructed on toggle-on). */
   destroy(): void {
     this.destroyed = true
+    this.stopKeepalive()
     for (const turn of this.inFlight.values()) {
       try {
         turn.controller.enqueue({ type: 'error', errorText: 'transport destroyed' })
@@ -212,13 +268,22 @@ export class HarnessTransport<UI_MESSAGE extends UIMessage = UIMessage>
     this.sessionPromise = null
   }
 
-  /** Cancel an in-flight turn. The harness doesn't expose a cancel frame
-   *  yet, so we fail the local stream and wait for the (now-orphaned)
-   *  remote response to drain into the dropped controller. TODO: add a
-   *  `{type:'cancel', id}` frame to the harness protocol. */
+  /** Cancel an in-flight turn. BUG-05 — the harness now implements a
+   *  `{type:'cancel', id}` frame (engine emits the trailing `done` with
+   *  cancelled:true and persists the partial). Send it so the REMOTE
+   *  streamText loop actually stops — previously Stop only killed the local
+   *  stream while the model ran to completion (token burn) and persisted the
+   *  FULL reply, leaving the next turn's context diverged from the UI. */
   private cancelTurn(id: string, reason: string = 'aborted'): void {
     const turn = this.inFlight.get(id)
     if (!turn) return
+    if (this.session?.ws.readyState === WebSocket.OPEN) {
+      try {
+        this.session.ws.send(JSON.stringify({ type: 'cancel', id }))
+      } catch {
+        // WS mid-close — the orphaned remote turn will drain harmlessly.
+      }
+    }
     try {
       turn.controller.enqueue({ type: 'abort', reason })
       turn.controller.close()
@@ -309,6 +374,11 @@ export class HarnessTransport<UI_MESSAGE extends UIMessage = UIMessage>
               content,
               provider,
               model,
+              // Browser's IANA timezone — lets the harness anchor "today" + the
+              // current time to the user's local zone (falls back to the saved
+              // profile timezone, then UTC). Resolved per-send so it tracks the
+              // user's actual location even when travelling.
+              timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
             }),
           )
           // Frame is on the wire; we're now waiting for the model's first
@@ -359,6 +429,18 @@ export class HarnessTransport<UI_MESSAGE extends UIMessage = UIMessage>
       .then((s) => {
         this.session = s
         this.sessionPromise = null
+        // WP-894 — adopt the controller's sessionId as our resume target so a
+        // WS drop + reconnect resumes THIS session (its jsonl history + uploads
+        // dir) instead of minting a fresh empty one. resumeSessionId was
+        // previously only ever assigned in the constructor (the thread-switcher
+        // "resume a past session" case), so a brand-new agent chat forgot
+        // which session it was in the moment the socket dropped → every
+        // reconnect was treated as turn 1, history + uploads vanished, and the
+        // model confabulated "each turn starts fresh" to explain the empty
+        // transcript it was handed. Always adopt whatever the controller
+        // actually returned — it may differ from the requested id if the
+        // ownership check failed and the controller fell back to a fresh one.
+        this.resumeSessionId = s.sessionId
         return s
       })
       .catch((e) => {
@@ -386,8 +468,13 @@ export class HarnessTransport<UI_MESSAGE extends UIMessage = UIMessage>
     })
     const data = await this.startSessionWithRetry()
 
+    // Derive the WS scheme from the URL scheme rather than hard-coding wss:.
+    // Prod harness URLs are https (→ wss); the local/Docker stack serves the
+    // harness over plain http://localhost:<port> (no TLS), which needs ws: —
+    // forcing wss: there makes the browser attempt a TLS handshake that fails,
+    // so Agent Mode never connects.
     const wsUrl =
-      data.container.url.replace(/^https?:/, 'wss:') +
+      data.container.url.replace(/^http(s?):/, 'ws$1:') +
       `/ws?token=${encodeURIComponent(data.token)}`
 
     this.setPhase({ kind: 'connecting' })
@@ -405,6 +492,10 @@ export class HarnessTransport<UI_MESSAGE extends UIMessage = UIMessage>
     // need to await it — fire-and-forget per WS message is correct.
     ws.addEventListener('message', (e) => { void this.onWsMessage(e) })
     ws.addEventListener('close', () => this.onWsClose())
+    // WP-894 — arm the liveness watchdog for this socket. It self-clears on
+    // close/destroy, and only force-closes an *unanswered* ping, so a healthy
+    // connection is never touched.
+    this.startKeepalive(ws)
     return session
   }
 
@@ -413,8 +504,18 @@ export class HarnessTransport<UI_MESSAGE extends UIMessage = UIMessage>
   private async startSessionWithRetry(): Promise<SessionStartResponse> {
     const url = `${this.apiBase}/api/controller/api/session/start`
     const delays = [1500, 4000]
+    const init: RequestInit = {
+      method: 'POST',
+      credentials: 'include',
+      ...(this.resumeSessionId
+        ? {
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ resumeSessionId: this.resumeSessionId }),
+          }
+        : {}),
+    }
     for (let attempt = 0; ; attempt++) {
-      const res = await fetch(url, { method: 'POST', credentials: 'include' })
+      const res = await fetch(url, init)
       if (res.ok) {
         return (await res.json()) as SessionStartResponse
       }
@@ -484,14 +585,16 @@ export class HarnessTransport<UI_MESSAGE extends UIMessage = UIMessage>
 
   private onWsClose(): void {
     if (this.destroyed) return
-    // The harness was restarted (typical during a deploy). Fail any
-    // in-flight turns so the UI doesn't hang. The next sendMessages
-    // call will lazily re-open via ensureSession().
+    // The harness was restarted (typical during a deploy) or the sprite went
+    // cold. Fail any in-flight turns so the UI doesn't hang. The next
+    // sendMessages call lazily re-opens via ensureSession(). UX-07 — surface a
+    // friendly, recoverable phase + message rather than the raw internal text.
+    this.setPhase({ kind: 'disconnected' })
     for (const turn of this.inFlight.values()) {
       try {
         turn.controller.enqueue({
           type: 'error',
-          errorText: 'harness connection closed',
+          errorText: 'Connection dropped — your next message will reconnect automatically.',
         })
         turn.controller.close()
       } catch {
@@ -500,6 +603,62 @@ export class HarnessTransport<UI_MESSAGE extends UIMessage = UIMessage>
       turn.cleanup()
     }
     this.session = null
+    this.stopKeepalive()
+  }
+
+  // ----------------------------------------------------------------- keepalive
+
+  /** Arm the liveness watchdog for a freshly-opened WS. Idempotent — disarms
+   *  any prior timer first so a reconnect swaps timers cleanly. */
+  private startKeepalive(ws: WebSocket): void {
+    this.stopKeepalive()
+    this.lastInboundAt = Date.now()
+    this.pingSentAt = 0
+    this.keepaliveTimer = setInterval(
+      () => this.keepaliveTick(ws),
+      this.keepaliveIntervalMs,
+    )
+  }
+
+  /** Disarm the watchdog. Safe to call when not armed. */
+  private stopKeepalive(): void {
+    if (this.keepaliveTimer) {
+      clearInterval(this.keepaliveTimer)
+      this.keepaliveTimer = null
+    }
+    this.pingSentAt = 0
+  }
+
+  /** One watchdog tick. Force-closes a socket whose last ping went
+   *  unanswered past the timeout; otherwise probes the harness with a ping
+   *  only when the connection has been genuinely idle (so active turns,
+   *  where frames are constantly flowing, never generate extra traffic). */
+  private keepaliveTick(ws: WebSocket): void {
+    if (this.destroyed) return
+    const now = Date.now()
+    // Outstanding ping past the deadline → half-dead socket (laptop sleep,
+    // network change). Close it so onWsClose → reconnect → resume runs.
+    if (this.pingSentAt && now - this.pingSentAt > this.keepaliveTimeoutMs) {
+      this.pingSentAt = 0
+      try {
+        ws.close()
+      } catch {
+        // already closing — onWsClose owns the rest
+      }
+      return
+    }
+    // Traffic is flowing (streaming / tool I/O) or a ping is already
+    // outstanding — no need to probe.
+    if (now - this.lastInboundAt < this.keepaliveIntervalMs) return
+    if (this.pingSentAt) return
+    if (ws.readyState !== WebSocket.OPEN) return
+    try {
+      ws.send(JSON.stringify({ type: 'ping' }))
+      this.pingSentAt = now
+    } catch {
+      // Send on a closing socket — onWsClose will reconnect. Leave pingSentAt
+      // unset so we don't arm a bogus timeout against a dead send.
+    }
   }
 
   // ----------------------------------------------------------------- ws frames
@@ -516,6 +675,18 @@ export class HarnessTransport<UI_MESSAGE extends UIMessage = UIMessage>
       return
     }
     if (!frame || typeof frame !== 'object' || typeof frame.type !== 'string') return
+
+    // WP-894 — any inbound frame proves the socket is alive, so the watchdog
+    // doesn't need to probe a connection that's actively delivering.
+    this.lastInboundAt = Date.now()
+
+    // Liveness frames — not addressed to a turn. `hello` is the harness's
+    // WS-open greeting; `pong` is the keepalive reply. Either clears an
+    // outstanding ping so the watchdog knows the socket is alive.
+    if (frame.type === 'hello' || frame.type === 'pong') {
+      this.pingSentAt = 0
+      return
+    }
 
     const id = (frame as { id?: string }).id
     if (!id) return
@@ -546,11 +717,12 @@ export class HarnessTransport<UI_MESSAGE extends UIMessage = UIMessage>
         // and reuse it for the matching `done` frame. Including
         // stringified input in the key handles the case where the same
         // tool is called twice in one turn — they'll get distinct ids.
-        const callKey = `${f.name}::${JSON.stringify(f.input ?? null)}`
         let toolCallId: string
         if (f.status === 'start') {
           toolCallId = randomUUID()
-          turn.toolCallIds.set(callKey, toolCallId)
+          const q = turn.toolCallIds.get(f.name) ?? []
+          q.push(toolCallId)
+          turn.toolCallIds.set(f.name, q)
           turn.controller.enqueue({
             type: 'tool-input-start',
             toolCallId,
@@ -575,7 +747,7 @@ export class HarnessTransport<UI_MESSAGE extends UIMessage = UIMessage>
           // 'done'. Look up the existing toolCallId; if absent, mint one
           // (defensive — shouldn't happen since the harness always emits
           // start before done) and emit start/input/output as a unit.
-          const existing = turn.toolCallIds.get(callKey)
+          const existing = turn.toolCallIds.get(f.name)?.shift()
           toolCallId = existing ?? randomUUID()
           if (!existing) {
             turn.controller.enqueue({
@@ -598,7 +770,6 @@ export class HarnessTransport<UI_MESSAGE extends UIMessage = UIMessage>
             output: f.output ?? null,
             dynamic: true,
           })
-          turn.toolCallIds.delete(callKey)
           // Tool finished. Drop back to thinking — there may be more
           // tools in the same turn, or text might start streaming next.
           this.setPhase({ kind: 'thinking' })
@@ -696,6 +867,10 @@ type WireFrame =
   | { type: 'sources'; id: string; sources: { uri: string; title?: string }[] }
   | { type: 'done'; id: string }
   | { type: 'error'; id: string; message: string }
+  // WP-894 — liveness frames (see keepalive watchdog). Neither carries a
+  // turn `id`; both are handled before the inFlight lookup.
+  | { type: 'hello' }
+  | { type: 'pong' }
 
 function randomUUID(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {

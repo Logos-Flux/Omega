@@ -4,6 +4,18 @@ WORKDIR /app
 COPY package.json bun.lock* ./
 RUN bun install
 
+# CLI toolchain for the `shell` tool + the skills that shell out via `exec`.
+# bash ships in the base image. poppler-utils provides pdftotext (pdf-extract)
+# and pdftoppm (the ocr skill's scanned-PDF bridge); tesseract-ocr backs the
+# ocr skill. On the Sprites path these come from the golden apt manifest; the
+# Docker path (this image: local compose, Helsinki, Legion) installs them here
+# so the same skills work. Deliberately slim otherwise — no language runtimes
+# unless a skill needs one.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git curl ca-certificates jq \
+    poppler-utils tesseract-ocr \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY . .
 
 # Bake skills/personas/soul under /home/sprite/ — that's the read-only

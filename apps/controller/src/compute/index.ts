@@ -22,7 +22,15 @@ export function getComputeProvider(): ComputeProvider {
     case 'sprites': {
       const token = process.env.SPRITES_API_TOKEN
       if (!token) throw new Error('COMPUTE_PROVIDER=sprites but SPRITES_API_TOKEN is not set')
-      const auth = (process.env.SPRITES_URL_AUTH ?? 'sprite') as 'sprite' | 'public'
+      // Default to `public` so the URL is flipped at *creation* time, not only
+      // during bootstrap. The browser reaches the harness over its public URL
+      // and the harness enforces its own JWT, so platform-level `sprite` auth
+      // would just 302 the browser to a login it can't complete. Creating the
+      // sprite `sprite` and relying on the bootstrap's later flip means a
+      // sprite whose bootstrap dies early (e.g. apply-golden error) is stranded
+      // unreachable — exactly the failure we hit. `SPRITES_URL_AUTH=sprite`
+      // still opts back into platform auth if ever needed.
+      const auth = (process.env.SPRITES_URL_AUTH ?? 'public') as 'sprite' | 'public'
       _provider = new SpritesProvider({ token, defaultUrlAuth: auth })
       return _provider
     }
@@ -34,6 +42,7 @@ export function getComputeProvider(): ComputeProvider {
         network: process.env.HARNESS_NETWORK,
         hostUrlBase: process.env.HARNESS_HOST_URL_BASE ?? 'http://localhost',
         publicUrl: process.env.HARNESS_PUBLIC_URL,
+        browserUrlBase: process.env.HARNESS_BROWSER_URL_BASE,
         hostPort: process.env.HARNESS_HOST_PORT,
         socketPath: process.env.DOCKER_SOCKET ?? '/var/run/docker.sock',
       })

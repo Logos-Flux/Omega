@@ -13,6 +13,9 @@ export const HARNESS_FORWARDED_ENV = [
   'ANTHROPIC_API_KEY',
   'GOOGLE_API_KEY',
   'PERPLEXITY_API_KEY',
+  'DEEPSEEK_API_KEY',
+  // Gates the harness's Ideogram `generate_image` tool (assembler.ts).
+  'IDEOGRAM_API_KEY',
   'HARNESS_JWT_SECRET',
   'CONTROLLER_BASE_URL',
   // NB: CONTROLLER_SERVICE_TOKEN is deliberately NOT forwarded — M1 (SEC-01)

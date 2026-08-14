@@ -72,8 +72,25 @@ async function upsertStubUser(email: string): Promise<SessionUser> {
   return rowToUser(result.rows[0]!, `local:${email}`)
 }
 
+// DB-23 — throttle the per-request last_seen_at write. Every authed request
+// hit this upsert, churning dead tuples on a table other tables FK into. We
+// only need the write for "seen recently" semantics, so skip it (read-only
+// fetch) when we wrote within the window. In-process + per-machine: at >1
+// machine each throttles independently, still a large reduction.
+const lastSeenWrites = new Map<string, number>()
+const LAST_SEEN_THROTTLE_MS = 60_000
+
 async function upsertCfAccessUser(sub: string, email: string): Promise<SessionUser> {
   const pool = getPool()
+  const now = Date.now()
+  if (now - (lastSeenWrites.get(sub) ?? 0) < LAST_SEEN_THROTTLE_MS) {
+    const sel = await pool.query<UserRow>(
+      `SELECT id, email, name, picture, cf_access_sub FROM chat.users WHERE cf_access_sub = $1`,
+      [sub],
+    )
+    if (sel.rows[0]) return rowToUser(sel.rows[0], sub)
+    // New user (no row yet) — fall through to the upsert.
+  }
   // ON CONFLICT on cf_access_sub is the primary path; email may legitimately
   // change between sessions (CF Access reads email from the IdP each time).
   const result = await pool.query<UserRow>(
@@ -85,6 +102,7 @@ async function upsertCfAccessUser(sub: string, email: string): Promise<SessionUs
      RETURNING id, email, name, picture, cf_access_sub`,
     [email, null, null, sub],
   )
+  lastSeenWrites.set(sub, now)
   return rowToUser(result.rows[0]!, sub)
 }
 
