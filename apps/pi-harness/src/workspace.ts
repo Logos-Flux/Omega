@@ -42,7 +42,7 @@ function workspaceRoot(): string {
   return process.env.WORKSPACE_ROOT ?? '/workspace'
 }
 
-const DEFAULT_STATE = JSON.stringify({ activePersona: 'default' })
+const DEFAULT_STATE = JSON.stringify({ activePersona: 'default', disabledSkills: [] })
 const DEFAULT_CORPORA = JSON.stringify({ corpora: [] })
 const BAKED_SOUL_PATH = '/home/sprite/soul.md'
 

@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import {
+  getShimStatus,
   mintGoogleToken,
   readShimConfig,
   startGccliShim,
@@ -46,7 +47,7 @@ describe('mintGoogleToken', () => {
       {
         userId: '11111111-2222-4333-8444-555555555555',
         controllerBaseUrl: 'https://ctrl.example/',
-        controllerServiceToken: 'svc-token',
+        controllerMintToken: 'svc-token',
       },
       fakeFetch,
     )
@@ -62,7 +63,7 @@ describe('mintGoogleToken', () => {
     expect(c.url).toBe('https://ctrl.example//api/oauth/google/access-token')
     expect(c.init.method).toBe('POST')
     const headers = c.init.headers as Record<string, string>
-    expect(headers.authorization).toBe('Bearer svc-token')
+    expect(headers['x-mint-token']).toBe('svc-token')
     expect(headers['content-type']).toBe('application/json')
     const body = JSON.parse(c.init.body as string) as { userId: string }
     expect(body.userId).toBe('11111111-2222-4333-8444-555555555555')
@@ -78,7 +79,7 @@ describe('mintGoogleToken', () => {
       {
         userId: 'u',
         controllerBaseUrl: 'https://ctrl.example',
-        controllerServiceToken: 'svc',
+        controllerMintToken: 'svc',
       },
       fakeFetch,
     )
@@ -95,7 +96,7 @@ describe('mintGoogleToken', () => {
         {
           userId: 'u',
           controllerBaseUrl: 'https://ctrl.example',
-          controllerServiceToken: 'svc',
+          controllerMintToken: 'svc',
         },
         fakeFetch,
       ),
@@ -113,7 +114,7 @@ describe('mintGoogleToken', () => {
         {
           userId: 'u',
           controllerBaseUrl: 'https://ctrl.example',
-          controllerServiceToken: 'svc',
+          controllerMintToken: 'svc',
         },
         fakeFetch,
       ),
@@ -226,13 +227,13 @@ describe('readShimConfig', () => {
   test('returns null when controller env vars are missing', () => {
     expect(readShimConfig({})).toBeNull()
     expect(readShimConfig({ CONTROLLER_BASE_URL: 'https://x' })).toBeNull()
-    expect(readShimConfig({ CONTROLLER_SERVICE_TOKEN: 'tok' })).toBeNull()
+    expect(readShimConfig({ CONTROLLER_MINT_TOKEN: 'tok' })).toBeNull()
   })
 
   test('strips trailing slashes from base URL', () => {
     const cfg = readShimConfig({
       CONTROLLER_BASE_URL: 'https://ctrl.example///',
-      CONTROLLER_SERVICE_TOKEN: 'tok',
+      CONTROLLER_MINT_TOKEN: 'tok',
     })
     expect(cfg?.controllerBaseUrl).toBe('https://ctrl.example')
   })
@@ -240,7 +241,7 @@ describe('readShimConfig', () => {
   test('captures Google client config when present', () => {
     const cfg = readShimConfig({
       CONTROLLER_BASE_URL: 'https://ctrl.example',
-      CONTROLLER_SERVICE_TOKEN: 'tok',
+      CONTROLLER_MINT_TOKEN: 'tok',
       GOOGLE_OAUTH_CLIENT_ID: 'cid',
       GOOGLE_OAUTH_CLIENT_SECRET: 'csec',
     })
@@ -266,7 +267,7 @@ describe('startGccliShim', () => {
         userId: 'u-with-email',
         config: {
           controllerBaseUrl: 'https://ctrl.example',
-          controllerServiceToken: 'svc',
+          controllerMintToken: 'svc',
           googleClientId: 'gcid',
           googleClientSecret: 'gcsec',
         },
@@ -289,6 +290,97 @@ describe('startGccliShim', () => {
     }
   })
 
+  test('records success state for /healthz after a clean mint+write', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'pi-harness-home-'))
+    try {
+      const fakeFetch = (async () =>
+        new Response(
+          JSON.stringify({ access_token: 'AT-ok', expires_in: 3599, email: 'ok@example.com' }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        )) as unknown as typeof fetch
+      await startGccliShim({
+        userId: 'u-status-ok',
+        config: {
+          controllerBaseUrl: 'https://ctrl.example',
+          controllerMintToken: 'svc',
+          googleClientId: 'gcid',
+          googleClientSecret: 'gcsec',
+        },
+        home,
+        fetchImpl: fakeFetch,
+        intervalMs: 60_000,
+      })
+      const status = getShimStatus()
+      expect(status.active).toBe(true)
+      expect(status.userId).toBe('u-status-ok')
+      expect(status.lastSuccessAt).not.toBeNull()
+      expect(status.consecutiveFailures).toBe(0)
+      expect(status.lastError).toBeNull()
+      stopGccliShim()
+      expect(getShimStatus().active).toBe(false)
+    } finally {
+      await rm(home, { recursive: true, force: true })
+    }
+  })
+
+  test('retries on the error interval (not the normal interval) after a mint failure', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'pi-harness-home-'))
+    let calls = 0
+    const fakeFetch = (async () => {
+      calls += 1
+      if (calls === 1) return new Response('controller is down', { status: 503 })
+      return new Response(
+        JSON.stringify({
+          access_token: `AT-call-${calls}`,
+          expires_in: 3599,
+          email: 'retry@example.com',
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      )
+    }) as unknown as typeof fetch
+    const origError = console.error
+    console.error = () => {}
+    try {
+      await startGccliShim({
+        userId: 'u-retry',
+        config: {
+          controllerBaseUrl: 'https://ctrl.example',
+          controllerMintToken: 'svc',
+          googleClientId: 'gcid',
+          googleClientSecret: 'gcsec',
+        },
+        home,
+        fetchImpl: fakeFetch,
+        // Long normal interval, short error retry — if we still tick
+        // within 200ms it can only be because the error path scheduled
+        // the retry on errorRetryMs, not intervalMs.
+        intervalMs: 60 * 60 * 1000,
+        errorRetryMs: 20,
+      })
+      // First call failed.
+      let status = getShimStatus()
+      expect(status.consecutiveFailures).toBe(1)
+      expect(status.lastError).toMatch(/503/)
+      expect(status.lastSuccessAt).toBeNull()
+      // Wait for the error-retry timer to fire (20ms) and the second
+      // call to land.
+      await new Promise((r) => setTimeout(r, 150))
+      status = getShimStatus()
+      expect(calls).toBeGreaterThanOrEqual(2)
+      expect(status.consecutiveFailures).toBe(0)
+      expect(status.lastSuccessAt).not.toBeNull()
+      // accounts.json now has the retry's access token.
+      const parsed = JSON.parse(
+        await readFile(join(home, '.gmcli', 'accounts.json'), 'utf8'),
+      ) as Array<{ oauth2: { accessToken?: string } }>
+      expect(parsed[0]!.oauth2.accessToken).toMatch(/^AT-call-/)
+    } finally {
+      stopGccliShim()
+      console.error = origError
+      await rm(home, { recursive: true, force: true })
+    }
+  })
+
   test('warns + skips writes when controller omits email', async () => {
     const home = await mkdtemp(join(tmpdir(), 'pi-harness-home-'))
     const warnings: string[] = []
@@ -306,7 +398,7 @@ describe('startGccliShim', () => {
         userId: 'u-no-email',
         config: {
           controllerBaseUrl: 'https://ctrl.example',
-          controllerServiceToken: 'svc',
+          controllerMintToken: 'svc',
           googleClientId: 'gcid',
           googleClientSecret: 'gcsec',
         },

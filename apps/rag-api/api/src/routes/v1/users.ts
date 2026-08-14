@@ -56,7 +56,7 @@ userRoutes.post('/sync', async (c) => {
 // `filesystem_*` fields scoped to the filesystem source so the
 // chat-frontend's <FilesystemPane> can render the right state. In drive
 // mode the response shape is unchanged from v0.5.x — the new fields
-// are omitted (not set to null) so 52L's payload is bit-identical.
+// are omitted (not set to null) so the drive-mode payload is bit-identical.
 userRoutes.get('/:user_id/status', async (c) => {
   const tenant = c.get('tenant')
   const chatUserId = c.req.param('user_id')
@@ -89,7 +89,7 @@ userRoutes.get('/:user_id/status', async (c) => {
       `SELECT COUNT(*)::text AS count FROM rag.user_file_access WHERE user_id = $1`,
       [user.id],
     ),
-    // Only run when filesystem fields are needed so a drive-mode 52L
+    // Only run when filesystem fields are needed so a drive-mode
     // deploy doesn't pay the cost on every poll. Counts files visible
     // to this user via filesystem rows; last_walk_ts uses the most
     // recent finished filesystem-source crawl.

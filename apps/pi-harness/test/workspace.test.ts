@@ -51,7 +51,7 @@ const EXPECTED_DIRS = [
 const EXPECTED_FILES: [string, string][] = [
   ['profile.json', '{}'],
   ['preferences.json', '{}'],
-  ['state.json', '{"activePersona":"default"}'],
+  ['state.json', '{"activePersona":"default","disabledSkills":[]}'],
   ['kb/corpora.json', '{"corpora":[]}'],
   ['audit.jsonl', ''],
   ['schedule.jsonl', ''],

@@ -68,7 +68,7 @@ export const isIngestable = mimeIngestable
 /**
  * Pick the source impl from RAG_SOURCE. Lazy import so a `filesystem`
  * deploy doesn't pay the googleapis startup cost. Default 'drive'
- * preserves backwards compat — every existing 52L/Helsinki deploy keeps
+ * preserves backwards compat — every existing deploy keeps
  * working without a config change.
  *
  * 'both' mode (drive + filesystem in the same crawl) is reserved for

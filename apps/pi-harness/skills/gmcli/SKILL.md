@@ -56,3 +56,21 @@ Common operations:
 - `~/.gmcli/credentials.json` - OAuth client credentials
 - `~/.gmcli/accounts.json` - Account tokens
 - `~/.gmcli/attachments/` - Downloaded attachments
+
+## Troubleshooting
+
+### `invalid_grant` errors
+
+If a Gmail call fails with `invalid_grant`, the cached access token has
+expired and the auto-refresh from the controller hasn't yet replaced it
+(or is failing). On a controller-managed sprite:
+
+1. Check `curl http://localhost:8080/healthz` — the `gccliShim` block
+   shows `lastSuccessAt`, `lastError`, and `consecutiveFailures`. If
+   `consecutiveFailures > 0`, the controller mint is failing; surface
+   the `lastError` to the user before retrying.
+2. The shim retries failed mints every ~60s, so transient blips
+   self-heal. If `consecutiveFailures` keeps climbing, the user's
+   OAuth grant in the controller is likely revoked at Google — the
+   user has to re-OAuth (re-run the consent flow), it can't be
+   recovered from the harness.

@@ -49,7 +49,7 @@ export type RagSourceMode = 'drive' | 'filesystem'
 
 /**
  * Pick the source mode from RAG_SOURCE. Defaults to 'drive' so existing
- * 52L/Helsinki deploys keep working without a config change. Unknown
+ * deploys keep working without a config change. Unknown
  * values fall back to 'drive' with a one-shot warning rather than
  * crashing — a typo here shouldn't take down the controller.
  *

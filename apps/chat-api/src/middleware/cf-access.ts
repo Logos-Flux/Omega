@@ -1,9 +1,15 @@
 // Cloudflare Access JWT verifier.
 //
-// When `CF_ACCESS_TEAM_DOMAIN` and `CF_ACCESS_AUD` are set, chat-api
+// When `CF_ACCESS_TEAM_DOMAIN` and `CF_ACCESS_AUD` are set, the service
 // verifies the JWT that Cloudflare Access injects on every authenticated
 // request and uses the claims (`email`, `sub`) as the user identity
 // instead of falling back to the single-user stub in `session.ts`.
+//
+// This file is the CANONICAL CF Access verifier. It is kept
+// byte-identical across chat-api, controller, intake, brand-id, and
+// weechat-api; the per-app `session.ts` glue imports these functions.
+// Do not edit a copy in place — change it here and re-sync (the shared nav
+// repo's `scripts/check-cf-access-drift.sh` enforces this).
 //
 // Wire format: the JWT arrives in the `Cf-Access-Jwt-Assertion` header.
 // Cloudflare also sets a `CF_Authorization` cookie; we accept that as a

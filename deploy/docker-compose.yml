@@ -14,8 +14,18 @@
 # the Docker daemon socket, using the omega-pi-harness:local image built below.
 #
 # Bring your own provider keys (ANTHROPIC_API_KEY, GOOGLE_API_KEY,
-# PERPLEXITY_API_KEY) and a HARNESS_JWT_SECRET via env or a .env file
-# in this directory.
+# PERPLEXITY_API_KEY, DEEPSEEK_API_KEY) and a HARNESS_JWT_SECRET via env or
+# a .env file in this directory. IDEOGRAM_API_KEY (optional) enables the
+# Agent-Mode generate_image tool; leave it unset to keep image-gen disabled.
+#
+# RELOADING KEYS AFTER FIRST BOOT: changing a provider key is a TWO-step
+# reload. (1) `docker compose up -d chat-api controller` so the long-running
+# services pick up the new value. (2) Agent Mode runs in a per-user pi-harness
+# the controller spawned earlier, and that container's env is baked in at
+# create() — it will NOT see the new key. Recycle it: `docker rm -f harness-<id>`
+# (its /workspace is a named volume and survives), and the controller respawns a
+# fresh one, with the key, on the user's next message. Until OP #724 (env-diff
+# auto-reset) lands, step 2 is manual.
 #
 # Important: HARNESS_JWT_SECRET, RAG_ADMIN_BEARER_TOKEN, and
 # RAG_DEV_BEARER_TOKEN have `dev-only-...` placeholder defaults below so
@@ -61,6 +71,8 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
       PERPLEXITY_API_KEY: ${PERPLEXITY_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      IDEOGRAM_API_KEY: ${IDEOGRAM_API_KEY:-}
       NODE_ENV: production
       PORT: "3000"
     ports:
@@ -93,11 +105,18 @@ services:
       HARNESS_NETWORK: ${COMPOSE_PROJECT_NAME:-omega}_default
       HARNESS_HOST_URL_BASE: http://localhost
       HARNESS_PUBLIC_URL: ${HARNESS_PUBLIC_URL:-}
+      # Per-session browser routing for remote/HTTPS access. Set to the public
+      # origin (e.g. https://omega.example.com); the browser then reaches each
+      # harness via <base>/harness/<container>, reverse-proxied by Caddy. Leave
+      # empty for pure local-laptop dev (browser hits http://localhost:<port>).
+      HARNESS_BROWSER_URL_BASE: ${HARNESS_BROWSER_URL_BASE:-}
       HARNESS_HOST_PORT: ${HARNESS_HOST_PORT:-}
       HARNESS_JWT_SECRET: ${HARNESS_JWT_SECRET:-dev-only-change-me-32-bytes-hex}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
       PERPLEXITY_API_KEY: ${PERPLEXITY_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      IDEOGRAM_API_KEY: ${IDEOGRAM_API_KEY:-}
       ENABLE_GOOGLE_OAUTH: "false"
       NODE_ENV: production
       PORT: "3001"

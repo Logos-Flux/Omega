@@ -209,7 +209,7 @@ priority order:
 1. **Contribute upstream behind a prop / feature flag.** Add the
    structure to Omega itself with an opt-in switch. OSS ships off by
    default; your deploy turns it on. Phase 4's app-shell port is the
-   archetype: 52L's polished top nav was added to OSS as a config-
+   archetype: a polished top nav was added to OSS as a config-
    driven structure with empty defaults.
 
 2. **Wrap, don't fork.** If the structure is genuinely org-specific

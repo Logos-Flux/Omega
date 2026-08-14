@@ -5,21 +5,16 @@ All notable changes to Omega are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.2] - Unreleased
 
-## [0.6.1] - 2026-05-12
-
-Multi-tenant unblocker + chat-frontend first-touch polish. v0.6.0 worked
-end-to-end for the ingest path but left the controller's session
-middleware as a single-user stub — every CF-Access-authed user
-collapsed into one `chat.users` row, so multi-tenant deploys silently
-saw every user as the same user. This release closes that gap, ports
-the existing harness `rag_search` tool into `chat-api` so plain-chat
-turns can answer from indexed Drive content too, ships the goldens
-operator playbook that Sprites-backed deploys need to land default
-skills on every sprite, and closes two ride-along chat-frontend bugs
-that regressed first-touch UX (Settings page session-open toast +
-missing "Connect Drive" CTA for brand-new users).
+Chat-frontend polish — closes two ride-along bugs surfaced during the
+multi-tenant Fly staging shakeout that the v0.6.1 cutover-blocker work didn't
+cover. Both regressed real first-touch UX for brand-new users on
+multi-tenant deploys: the Settings page showed a session-open error
+toast on every load, and Settings → Connectors had no way to start
+the Drive OAuth flow at all (the staging team worked around it by
+hand-crafting an `/api/oauth/google/start` URL). Pure
+chat-frontend changes; no backend, env, or schema impact.
 
 ### Fixed
 
@@ -35,53 +30,6 @@ missing "Connect Drive" CTA for brand-new users).
 
 ### Added
 
-- **Cloudflare Access JWT session middleware** in both `controller` and
-  `chat-api`. When `CF_ACCESS_TEAM_DOMAIN` and `CF_ACCESS_AUD` are both
-  set, the session middleware verifies the CF Access JWT
-  (`Cf-Access-Jwt-Assertion` header or `CF_Authorization` cookie) against
-  the team's public JWKS, validates `aud` and `iss`, and identifies the
-  user from the verified `email` and `sub` claims. `chat.users` is
-  upserted by `cf_access_sub` so a user keeps the same row even if their
-  email changes at the IdP. Required for any multi-tenant deploy — the
-  prior single-user stub mapped every request to `DEFAULT_USER_EMAIL`,
-  collapsing all CF-Access-authed users into one identity. The stub
-  remains the default when CF Access env is absent, preserving the
-  self-host UX where the operator provides perimeter auth. Setting only
-  one of the two CF Access env vars is a misconfiguration and the
-  process fails to start (closed-loud rather than silently dropping to
-  the stub).
-- **`rag_search` tool in `chat-api`** (`apps/chat-api/src/lib/rag.ts`
-  + wiring in `providers.ts:toolsForProvider`). When `RAG_API_URL` and
-  `RAG_SERVICE_TOKEN` are both set, every chat turn — across Anthropic,
-  Gemini, and Perplexity — has access to a `rag_search` tool the model
-  can call to retrieve chunks from the user's indexed Drive content.
-  POSTs to `${RAG_API_URL}/api/v1/query` with `{ user_id, query, top_k }`
-  and a service-bearer Authorization; returns chunks with `file_name`,
-  `snippet`, `score`, and `source_url`. Mirror of
-  `apps/pi-harness/src/lib/rag.ts` byte-for-byte so the response shape
-  is consistent across Agent Mode and plain chat — the chat-frontend's
-  citation chip renderer sees the same payload regardless of which
-  surface answered. Failures are returned as `{ error: string }` instead
-  of thrown so the AI SDK tool wrapper hands the message back to the
-  model. Without the env, the tool isn't registered (the model can't
-  hallucinate a tool it doesn't know about).
-- **`apps/controller/goldens/README.md`** — operator playbook for
-  publishing a new golden image. Walks through building the harness
-  bundle, computing the manifest sha, registering in
-  `pi.golden_images`, applying via `scripts/apply-golden.ts`, promoting
-  across `alpha → beta → launch` channels, and retiring known-bad
-  versions.
-- **`apps/controller/goldens/example/manifest.json`** — illustrative
-  manifest demonstrating the `default_skills` clause. Its
-  `local_path` references the in-repo `apps/pi-harness/skills/` tree
-  via relative path, so operators inherit the canonical skills set
-  without copying it into their golden. Skills bundled this way land
-  at `/home/sprite/skills/` and show up in Agent Mode's sidebar — the
-  prior behavior (no `default_skills` clause anywhere) silently
-  shipped sprites with 0 skills loaded.
-- **`.gitignore` rule** for `apps/controller/goldens/*/` (excluding
-  `example/`), so operator-published goldens stay in the operator's
-  deploy repo and don't accidentally land in upstream commits.
 - **`not-connected` view state in `<DriveConnectPane>`** with a
   Connect Drive CTA that top-level-navigates to
   `/api/oauth/google/start?return_to=...` via the existing
@@ -101,6 +49,69 @@ missing "Connect Drive" CTA for brand-new users).
 - **`RagApiError` is now exported** from `rag-api.ts`. Callers that
   need to discriminate by HTTP status can `instanceof`-check it.
 
+## [0.6.1] - 2026-05-12
+
+Multi-tenant unblocker. v0.6.0 worked end-to-end for the ingest path
+but left the controller's session middleware as a single-user stub —
+every CF-Access-authed user collapsed into one `chat.users` row, so
+multi-tenant deploys (a Fly cutover, anyone running Omega behind CF
+Access for more than one user) silently saw every user as the same
+user. This release closes that gap, ports the existing harness
+`rag_search` tool into `chat-api` so plain-chat turns can answer from
+indexed Drive content too, and ships the goldens operator playbook
+that Sprites-backed deploys need to land default skills on every
+sprite.
+
+### Added
+
+- **Cloudflare Access JWT session middleware** in both `controller` and
+  `chat-api`. When `CF_ACCESS_TEAM_DOMAIN` and `CF_ACCESS_AUD` are both
+  set, the session middleware verifies the CF Access JWT
+  (`Cf-Access-Jwt-Assertion` header or `CF_Authorization` cookie) against
+  the team's public JWKS, validates `aud` and `iss`, and identifies the
+  user from the verified `email` and `sub` claims. `chat.users` is
+  upserted by `cf_access_sub` so a user keeps the same row even if their
+  email changes at the IdP. Required for any multi-tenant deploy — the
+  prior single-user stub mapped every request to `DEFAULT_USER_EMAIL`,
+  collapsing all CF-Access-authed users into one identity. The stub
+  remains the default when CF Access env is absent, preserving the
+  self-host UX where the operator provides perimeter auth. Setting only
+  one of the two CF Access env vars is a misconfiguration and the
+  process fails to start (closed-loud rather than silently dropping to
+  the stub).
+- **`apps/controller/goldens/README.md`** — operator playbook for
+  publishing a new golden image. Walks through building the harness
+  bundle, computing the manifest sha, registering in
+  `pi.golden_images`, applying via `scripts/apply-golden.ts`, promoting
+  across `alpha → beta → launch` channels, and retiring known-bad
+  versions.
+- **`apps/controller/goldens/example/manifest.json`** — illustrative
+  manifest demonstrating the `default_skills` clause. Its
+  `local_path` references the in-repo `apps/pi-harness/skills/` tree
+  via relative path, so operators inherit the canonical skills set
+  without copying it into their golden. Skills bundled this way land
+  at `/home/sprite/skills/` and show up in Agent Mode's sidebar — the
+  prior behavior (no `default_skills` clause anywhere) silently
+  shipped sprites with 0 skills loaded.
+- **`.gitignore` rule** for `apps/controller/goldens/*/` (excluding
+  `example/`), so operator-published goldens stay in the operator's
+  deploy repo and don't accidentally land in upstream commits.
+- **`rag_search` tool in `chat-api`** (`apps/chat-api/src/lib/rag.ts`
+  + wiring in `providers.ts:toolsForProvider`). When `RAG_API_URL` and
+  `RAG_SERVICE_TOKEN` are both set, every chat turn — across Anthropic,
+  Gemini, and Perplexity — has access to a `rag_search` tool the model
+  can call to retrieve chunks from the user's indexed Drive content.
+  POSTs to `${RAG_API_URL}/api/v1/query` with `{ user_id, query, top_k }`
+  and a service-bearer Authorization; returns chunks with `file_name`,
+  `snippet`, `score`, and `source_url`. Mirror of
+  `apps/pi-harness/src/lib/rag.ts` byte-for-byte so the response shape
+  is consistent across Agent Mode and plain chat — the chat-frontend's
+  citation chip renderer sees the same payload regardless of which
+  surface answered. Failures are returned as `{ error: string }` instead
+  of thrown so the AI SDK tool wrapper hands the message back to the
+  model. Without the env, the tool isn't registered (the model can't
+  hallucinate a tool it doesn't know about).
+
 ## [0.6.0] - 2026-05-10
 
 Filesystem RAG source + deploy plumbing envs. Self-hosted Omega deploys
@@ -113,7 +124,7 @@ mode the deploy picks via a new `/api/rag/source` probe.
 In parallel, four optional build-time envs on `apps/chat-frontend` let
 a deploy mount the SPA under a sub-path, point auth at a different
 origin, wire Cloudflare Access logout, and (in dev) skip the `/api/me`
-probe — closing the gap that previously forced 52L to ship a wrapper
+probe — closing the gap that previously forced downstream deploys to ship a wrapper
 App in its deploy repo. Three remaining hardcoded `Omega` strings in
 chat-frontend components now read from `brand.name` so
 `VITE_BRAND_NAME` controls every wordmark.
@@ -210,7 +221,7 @@ chat-frontend components now read from `brand.name` so
 
 ### Migration notes for existing deploys
 
-- **`RAG_SOURCE` defaults to `drive`.** Existing 52L / Helsinki / OSS
+- **`RAG_SOURCE` defaults to `drive`.** Existing downstream / OSS
   deploys keep the v0.5.x flow without a config change.
 - **Migration 0004 runs on `rag-api` boot.** Non-destructive but
   irreversible: backfills `source_id` from `gdrive_file_id`, then
@@ -224,15 +235,15 @@ chat-frontend components now read from `brand.name` so
 ## [0.5.1] - 2026-05-09
 
 Bug fix: chat-frontend silently lost agent-mode state for users
-upgrading from a 52L-built bundle that wrote the
-`52l.chat.agentMode` localStorage key. v0.5.0 renamed the key prefix
+upgrading from a prior-org bundle that wrote the legacy
+`agentMode` localStorage key. v0.5.0 renamed the key prefix
 to `omega.chat.*` but didn't carry forward existing values; a user
 who had agent mode enabled would see it reset on first load.
 
 ### Fixed
 
 - **`apps/chat-frontend/src/lib/agent-mode.ts`** migrates legacy
-  `52l.chat.agentMode` localStorage entries into the new
+  prior-org `agentMode` localStorage entries into the new
   `omega.chat.agentMode` key on first read, then drops the legacy
   copy. Idempotent; tolerates missing values; safe in browsers without
   localStorage (SSR / private-tab paths).
@@ -297,7 +308,7 @@ content on top without forking the codebase.
 ### Fixed
 
 - localStorage / sessionStorage keys renamed from the prior-org
-  namespace `52l.chat.*` to `omega.chat.*`. Three sites:
+  namespace to `omega.chat.*`. Three sites:
   `provider-store` (selected provider/tier), `AgentActivityPanel`
   (panel open/closed), and `google-oauth` (skip-for-session flag).
   New `apps/chat-frontend/src/lib/storage.ts` adds a

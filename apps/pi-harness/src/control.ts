@@ -31,25 +31,36 @@ import { truncateConversationAt } from './memory'
 import type { Outgoing } from './types'
 
 /**
+ * One in-flight turn: its AbortController plus the promise that resolves
+ * when engine.run() has fully unwound — INCLUDING the engine's trailing
+ * partial-assistant append on abort. Rewind must await `done` (BUG-04), not
+ * just fire `abort()`, or the late append lands after the truncate.
+ */
+export interface InFlightTurn {
+  ctrl: AbortController
+  done: Promise<void>
+}
+
+/**
  * Per-WS in-flight turn registry. One entry per active streamText
  * call; cleared automatically when the WS closes (the Map is owned
  * by the connection's `data` slot).
  */
-export type InFlightTurns = Map<string, AbortController>
+export type InFlightTurns = Map<string, InFlightTurn>
 
 export function cancelTurn(
   turnId: string,
   inflight: InFlightTurns,
   emit: (out: Outgoing) => void,
 ): void {
-  const ctrl = inflight.get(turnId)
-  if (!ctrl) {
+  const entry = inflight.get(turnId)
+  if (!entry) {
     // X.C.1 — silent no-op for unknown ids. The client may have
     // pressed Stop after the turn already finished; that's fine.
     // Emitting an error here would be misleading.
     return
   }
-  ctrl.abort()
+  entry.ctrl.abort()
   inflight.delete(turnId)
   // Don't emit `done` from here — the engine's catch handler does
   // that once the streamText loop unwinds. Emitting from both sides
@@ -58,15 +69,19 @@ export function cancelTurn(
 }
 
 /**
- * Cancel every in-flight turn for this connection. Used by the
- * rewind handler to ensure no streamText loop is still appending to
- * a conversation file we're about to truncate.
+ * Cancel every in-flight turn for this connection AND wait for each run to
+ * finish unwinding. Used by the rewind handler so no streamText loop is still
+ * appending to a conversation file we're about to truncate (BUG-04). Without
+ * the await, the engine's trailing partial-assistant append races the
+ * truncate and re-corrupts the file after the rewind.
  */
-export function cancelAllTurns(inflight: InFlightTurns): void {
-  for (const ctrl of inflight.values()) {
-    ctrl.abort()
-  }
+export async function cancelAllTurns(inflight: InFlightTurns): Promise<void> {
+  const pending = [...inflight.values()].map((e) => {
+    e.ctrl.abort()
+    return e.done
+  })
   inflight.clear()
+  await Promise.allSettled(pending)
 }
 
 export interface RewindResult {
@@ -79,10 +94,10 @@ export async function rewindConversation(
   toMessageId: string,
   inflight: InFlightTurns,
 ): Promise<RewindResult> {
-  // Cascade-cancel before truncating so no engine.run() is still
-  // mid-append. The engine's finally-emitted assistant entry would
-  // otherwise land after the rewind and re-corrupt the file.
-  cancelAllTurns(inflight)
+  // Cascade-cancel AND await before truncating so no engine.run() is still
+  // mid-append. The engine's trailing assistant entry would otherwise land
+  // after the rewind and re-corrupt the file (BUG-04).
+  await cancelAllTurns(inflight)
   const truncated = await truncateConversationAt(sessionId, toMessageId)
   if (!truncated) return { ok: false, reason: 'not_found' }
   return { ok: true }

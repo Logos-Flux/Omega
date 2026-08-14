@@ -3,7 +3,12 @@
 // `AgentChat.tsx`. Pulled out so a single utilities module can serve both
 // the transport (lib) and the UI (components).
 
-export const MAX_UPLOAD_BYTES = 1_000_000
+// Build-time override (Vite inlines `import.meta.env.VITE_*` at build).
+// Default raised from 1 MB → 100 MB on 2026-05-14 — 1 MB blocked any
+// real PDF or presentation. Server-side limit lives in
+// `apps/pi-harness/src/uploads.ts:MAX_BYTES` and must be at least as
+// permissive as this client cap, or the harness 413's.
+export const MAX_UPLOAD_BYTES = Number(import.meta.env.VITE_MAX_UPLOAD_BYTES) || 100_000_000
 
 // First-ever provision (apt install of poppler/pandoc/weasyprint + npm
 // globals + harness boot + healthz) takes ~3–5 minutes on a brand-new
@@ -13,6 +18,24 @@ export const MAX_UPLOAD_BYTES = 1_000_000
 // provision budget so a user toggling Agent Mode mid-warmup doesn't
 // see a red error before bootstrap finishes; total budget here ≈ 6m.
 export const WS_RETRY_DELAYS_MS = [3000, 5000, 10000, 30000, 45000, 60000, 60000, 60000, 60000]
+
+// WP-894 — application-level WebSocket keepalive. Browsers cannot emit WS
+// protocol-level ping frames from JS, so without an app-level ping the client
+// has no way to tell a *half-dead* socket (laptop sleep, Wi-Fi handoff,
+// backgrounded tab where the OS suspended the radio) from a live-but-thinking
+// one. The transport sends `{type:'ping'}` when the connection has been idle
+// longer than the interval; the harness replies `{type:'pong'}` (see
+// apps/pi-harness/src/index.ts). If a ping goes unanswered past the timeout,
+// the watchdog force-closes the socket so the existing onWsClose → reconnect
+// → resume path fires — instead of the user's next message stalling on
+// "Thinking…" against a socket the browser still reports as OPEN.
+//
+// Interval is deliberately long: during active streaming/tool use, inbound
+// frames reset the idle timer, so pings only go out during genuine quiet
+// (long model thinks, idle between turns). Timeout is generous because a live
+// sprite answers a WS frame in milliseconds — anything past this is dead.
+export const WS_KEEPALIVE_INTERVAL_MS = 25_000
+export const WS_KEEPALIVE_TIMEOUT_MS = 15_000
 
 export interface SessionStartResponse {
   sessionId: string

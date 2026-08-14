@@ -25,14 +25,32 @@
 		}
 	}
 
+	# Agent-mode harness (sprite) proxy — the browser-facing half of the
+	# per-session sprite-URL split. The controller hands the browser
+	# https://<host>/harness/<container>, and we reverse-proxy (WS-aware) to
+	# that harness container on the shared docker network. Without this the
+	# browser would get http://localhost:<dynamic-port>, unreachable over
+	# remote HTTPS. The name is constrained to `harness-<slug>` so a client
+	# can't address arbitrary containers. reverse_proxy upgrades WebSockets
+	# automatically; {re.h.2} carries the remainder path (e.g. /ws).
+	@harness path_regexp h ^/harness/(harness-[a-z0-9]+)(/.*)?$
+	handle @harness {
+		rewrite * {re.h.2}
+		reverse_proxy {re.h.1}:8080
+	}
+
 	# Static SPA + fallback.
 	handle {
 		root * /srv
 		try_files {path} /index.html
 		file_server
 
-		@hashed path_regexp \.(js|css|png|jpg|jpeg|svg|webp|woff2|ico)$
-		header @hashed Cache-Control "public, max-age=31536000, immutable"
+		# PERF-15 — immutable ONLY for Vite's content-hashed /assets/*. The old
+		# extension matcher stuck every .js/.css/.ico — including non-hashed
+		# public/ files like favicon — with a 1-year immutable cache so they
+		# could never be busted. Those now revalidate normally; no-cache the index.
+		@assets path /assets/*
+		header @assets Cache-Control "public, max-age=31536000, immutable"
 		header /index.html Cache-Control "no-cache"
 	}
 

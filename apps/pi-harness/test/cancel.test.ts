@@ -106,7 +106,7 @@ describe('cancelTurn (X.C.1)', () => {
   test('aborts the registered controller and removes the entry', () => {
     const inflight: InFlightTurns = new Map()
     const ctrl = new AbortController()
-    inflight.set('turn-1', ctrl)
+    inflight.set('turn-1', { ctrl, done: Promise.resolve() })
     cancelTurn('turn-1', inflight, () => {})
     expect(ctrl.signal.aborted).toBe(true)
     expect(inflight.has('turn-1')).toBe(false)
@@ -115,7 +115,7 @@ describe('cancelTurn (X.C.1)', () => {
   test('is a silent no-op for an unknown id', () => {
     const inflight: InFlightTurns = new Map()
     const ctrl = new AbortController()
-    inflight.set('turn-1', ctrl)
+    inflight.set('turn-1', { ctrl, done: Promise.resolve() })
     cancelTurn('does-not-exist', inflight, () => {})
     // The unrelated controller stays untouched.
     expect(ctrl.signal.aborted).toBe(false)
@@ -124,7 +124,7 @@ describe('cancelTurn (X.C.1)', () => {
 
   test('does NOT emit a done event itself — engine emits the trailing done', () => {
     const inflight: InFlightTurns = new Map()
-    inflight.set('turn-1', new AbortController())
+    inflight.set('turn-1', { ctrl: new AbortController(), done: Promise.resolve() })
     const events: Outgoing[] = []
     cancelTurn('turn-1', inflight, (out) => events.push(out))
     expect(events).toEqual([])
@@ -136,8 +136,8 @@ describe('cancelAllTurns (X.C.2 cascade)', () => {
     const inflight: InFlightTurns = new Map()
     const a = new AbortController()
     const b = new AbortController()
-    inflight.set('a', a)
-    inflight.set('b', b)
+    inflight.set('a', { ctrl: a, done: Promise.resolve() })
+    inflight.set('b', { ctrl: b, done: Promise.resolve() })
     cancelAllTurns(inflight)
     expect(a.signal.aborted).toBe(true)
     expect(b.signal.aborted).toBe(true)

@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { getPool } from '../../lib/db'
 import { resolveTenantDataset } from '../../lib/dataset'
-import { resolveUser } from '../../lib/users'
+import { findUser } from '../../lib/users'
 import { retrieve, type RetrievalChunk } from '../../lib/ragflow'
 
 export const queryRoutes = new Hono()
@@ -29,7 +29,13 @@ queryRoutes.post('/', async (c) => {
   if (!body.user_id) return c.json({ error: 'user_id required' }, 400)
   if (!body.query) return c.json({ error: 'query required' }, 400)
 
-  const user = await resolveUser(tenant.id, body.user_id)
+  // BUG-07 — query must NOT auto-create a rag.users row. resolveUser is the
+  // /sync-only first-touch boundary; calling it here materialised a phantom
+  // row for every chat user who triggered rag_search without connecting Drive,
+  // and the recrawl loop then retried that never-real user every 15 min
+  // forever. A user with no row simply has no indexed content → empty result.
+  const user = await findUser(tenant.id, body.user_id)
+  if (!user) return c.json({ chunks: [] satisfies OutChunk[] })
   const dataset = await resolveTenantDataset(tenant.id)
   if (!dataset) {
     return c.json({ error: 'no RAGFlow dataset configured for tenant; create one in the RAGFlow UI' }, 503)

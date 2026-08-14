@@ -42,7 +42,7 @@ export function ConnectGoogleScreen() {
           <li className="flex gap-2">
             <span aria-hidden className="text-t-accent">·</span>
             <span>
-              <span className="text-t-bright">Read your Google Drive</span> (read-only)
+              <span className="text-t-bright">Read, create, and edit files</span> in your Google Drive
             </span>
           </li>
           <li className="flex gap-2">
@@ -79,6 +79,85 @@ export function ConnectGoogleScreen() {
         </p>
       </div>
     </main>
+  )
+}
+
+const reconnectGoogle = () => {
+  // Same /start navigation as the connect screen — with `prompt=consent` the
+  // grant is upgraded in place. The discoverable path so users never need a
+  // hand-pasted URL to pick up new permissions.
+  window.location.href = buildOAuthStartUrl()
+}
+
+// Blocking, can't-miss modal shown when the user IS connected but on an older
+// grant missing a scope we now need (Drive write / Gmail / Calendar / the RAG
+// knowledge base). A top banner was too easy to miss, so this overlays the app
+// until the user either reconnects or explicitly declines. Declining doesn't
+// make the reminder disappear — it falls back to the persistent banner.
+export function ReconnectGoogleModal({ onDecline }: { onDecline: () => void }) {
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="reconnect-google-title"
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 px-4 backdrop-blur-sm"
+    >
+      <div className="t-card w-full max-w-md p-8">
+        <div className="mb-3 inline-flex items-center gap-2 rounded border border-t-accent/40 px-3 py-1 text-[10px] font-display uppercase tracking-[0.2em] text-t-accent">
+          <span aria-hidden>⟳</span> Action needed
+        </div>
+        <h1 id="reconnect-google-title" className="mb-3 font-display text-2xl font-semibold text-t-bright">
+          Reconnect your Google account
+        </h1>
+        <p className="mb-4 text-sm text-t-muted">
+          Your Google connection is missing permissions the assistant now needs.
+          Until you reconnect, it can&apos;t reliably reach your{' '}
+          <span className="text-t-bright">Drive (incl. the knowledge base), Gmail, and Calendar</span>{' '}
+          — you&apos;ll hit confusing errors on those actions.
+        </p>
+
+        <button
+          type="button"
+          onClick={reconnectGoogle}
+          className="inline-flex w-full items-center justify-center gap-2 rounded border border-t-accent bg-t-accent/10 px-4 py-2 text-sm font-medium text-t-bright transition-colors hover:bg-t-accent/20"
+        >
+          Reconnect Google
+        </button>
+
+        <button
+          type="button"
+          onClick={onDecline}
+          className="mt-3 block w-full text-center text-xs uppercase tracking-wider text-t-muted underline-offset-2 hover:text-t-bright hover:underline"
+        >
+          Not now
+        </button>
+        <p className="mt-2 text-center text-[10px] text-t-muted/70">
+          If you decline, a reminder banner stays at the top until you reconnect.
+        </p>
+      </div>
+    </div>
+  )
+}
+
+// Persistent reminder banner shown AFTER the user declines the modal. It has no
+// dismiss control on purpose — the whole point is that it stays visible until
+// the grant is upgraded (people were missing a dismissible version).
+export function ReconnectGoogleBanner() {
+  return (
+    <div className="flex items-center gap-3 border-b border-t-accent/40 bg-t-accent/10 px-4 py-2 text-sm text-t-bright">
+      <span aria-hidden className="text-t-accent">⟳</span>
+      <span className="flex-1">
+        Your Google connection needs to be refreshed for{' '}
+        <span className="text-t-bright">Drive, Gmail, and Calendar</span> to work.
+      </span>
+      <button
+        type="button"
+        onClick={reconnectGoogle}
+        className="shrink-0 rounded border border-t-accent bg-t-accent/10 px-3 py-1 text-xs font-medium text-t-bright transition-colors hover:bg-t-accent/20"
+      >
+        Reconnect Google
+      </button>
+    </div>
   )
 }
 

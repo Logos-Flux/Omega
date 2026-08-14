@@ -19,23 +19,36 @@ import { useCallback, useEffect, useState } from 'react'
 import { AppShell, UserMenu } from '@omega-inc/app-shell'
 import {
   acceptProposal,
+  clearMemory,
+  deleteSkill,
+  getMemory,
   getProfile,
+  getSkills,
+  listPersonas,
   listProposals,
   openSession,
+  putMemory,
   putProfile,
   rejectProposal,
+  setPersona,
+  setSkillEnabled,
   type HarnessSessionHandle,
+  type PersonaInfo,
   type Profile,
   type ProfileProposal,
+  type SkillInfo,
 } from '../lib/harness-api'
+import { brand } from '../lib/brand'
 import { RAGSourceCard } from './RAGSourceCard'
 
 // ---------- Section nav ---------------------------------------------------
 
 type SectionId =
   | 'profile'
-  | 'preferences'
   | 'persona'
+  | 'skills'
+  | 'memory'
+  | 'preferences'
   | 'quick-actions'
   | 'connectors'
   | 'audit'
@@ -48,8 +61,10 @@ const SECTIONS: ReadonlyArray<{
   implemented: boolean
 }> = [
   { id: 'profile', label: 'Profile', phase: 'Phase II', implemented: true },
+  { id: 'persona', label: 'Persona', phase: 'Phase VI', implemented: true },
+  { id: 'skills', label: 'Skills', phase: 'Phase VI', implemented: true },
+  { id: 'memory', label: 'Memory', phase: 'Phase VI', implemented: true },
   { id: 'preferences', label: 'Preferences', phase: 'Phase V', implemented: false },
-  { id: 'persona', label: 'Persona', phase: 'Phase VI', implemented: false },
   { id: 'quick-actions', label: 'Quick Actions', phase: 'Phase III', implemented: false },
   { id: 'connectors', label: 'Connectors', phase: 'Phase IV', implemented: true },
   { id: 'audit', label: 'Audit', phase: 'Phase IX', implemented: false },
@@ -96,6 +111,9 @@ export function SettingsPage() {
   return (
     <AppShell
       appId="chat"
+      brandText={brand.name}
+      brandHref={import.meta.env.BASE_URL}
+      navConfigUrl={import.meta.env.VITE_NAV_CONFIG_URL || undefined}
       topNavEndSlot={<UserMenu settingsHref={`${import.meta.env.BASE_URL}settings`} />}
     >
       <div className="flex min-h-full bg-t-deep">
@@ -108,10 +126,13 @@ export function SettingsPage() {
               </div>
             )}
             {section === 'profile' && <ProfileSection session={session} />}
+            {section === 'persona' && <PersonaSection session={session} />}
+            {section === 'skills' && <SkillsSection session={session} />}
+            {section === 'memory' && <MemorySection session={session} />}
             {section === 'connectors' && <ConnectorsSection />}
-            {section !== 'profile' && section !== 'connectors' && (
-              <StubSection sectionId={section} />
-            )}
+            {(section === 'preferences' ||
+              section === 'quick-actions' ||
+              section === 'audit') && <StubSection sectionId={section} />}
           </div>
         </main>
       </div>
@@ -229,6 +250,402 @@ function ConnectorsSection() {
       </header>
       <RAGSourceCard />
     </section>
+  )
+}
+
+// ---------- Persona section (#6) ------------------------------------------
+//
+// Cosmetic preset picker: the active persona swaps the assistant's
+// system-prompt body. Takes effect on the next message in Agent Mode.
+
+function PersonaSection({ session }: { session: HarnessSessionHandle | null }) {
+  const [personas, setPersonas] = useState<PersonaInfo[]>([])
+  const [active, setActive] = useState<string>('default')
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [saving, setSaving] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!session) return
+    let cancelled = false
+    setLoading(true)
+    listPersonas(session)
+      .then((d) => {
+        if (cancelled) return
+        setPersonas(d.personas)
+        setActive(d.active)
+      })
+      .catch((e: Error) => !cancelled && setError(e.message))
+      .finally(() => !cancelled && setLoading(false))
+    return () => {
+      cancelled = true
+    }
+  }, [session])
+
+  const choose = useCallback(
+    async (name: string) => {
+      if (!session || name === active) return
+      const prev = active
+      setActive(name) // optimistic
+      setSaving(name)
+      setError(null)
+      try {
+        await setPersona(session, name)
+      } catch (e) {
+        setActive(prev)
+        setError((e as Error).message)
+      } finally {
+        setSaving(null)
+      }
+    },
+    [session, active],
+  )
+
+  return (
+    <section>
+      <header className="mb-6">
+        <h1 className="mb-1 font-display text-2xl font-semibold text-t-bright">Persona</h1>
+        <p className="text-sm text-t-muted">
+          Pick how the assistant approaches your messages. Takes effect on the next message.
+        </p>
+      </header>
+
+      {!session && !error && <OpeningSession />}
+      {error && <ErrorBanner>Couldn't update persona: {error}</ErrorBanner>}
+      {loading && session && <LoadingLine>Loading personas…</LoadingLine>}
+
+      <div className="space-y-2">
+        {personas.map((p) => {
+          const isActive = p.name === active
+          return (
+            <button
+              key={p.name}
+              type="button"
+              onClick={() => choose(p.name)}
+              aria-pressed={isActive}
+              disabled={saving !== null}
+              className={[
+                'flex w-full items-start gap-3 rounded border p-3 text-left transition-colors disabled:opacity-60',
+                isActive
+                  ? 'border-t-accent bg-t-accent/10'
+                  : 'border-t-border bg-t-surface hover:border-t-border-active',
+              ].join(' ')}
+            >
+              <span
+                aria-hidden
+                className={[
+                  'mt-0.5 inline-block h-4 w-4 shrink-0 rounded-full border',
+                  isActive ? 'border-t-accent bg-t-accent' : 'border-t-border',
+                ].join(' ')}
+              />
+              <span className="min-w-0">
+                <span className="block font-display text-sm capitalize text-t-bright">
+                  {p.name}
+                </span>
+                <span className="block text-sm text-t-muted">{p.label}</span>
+              </span>
+            </button>
+          )
+        })}
+      </div>
+    </section>
+  )
+}
+
+// ---------- Skills section (#3 toggle + #4 delete) ------------------------
+
+function SkillsSection({ session }: { session: HarnessSessionHandle | null }) {
+  const [skills, setSkills] = useState<SkillInfo[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState<string | null>(null)
+
+  const reload = useCallback(async () => {
+    if (!session) return
+    setLoading(true)
+    setError(null)
+    try {
+      setSkills(await getSkills(session))
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setLoading(false)
+    }
+  }, [session])
+
+  useEffect(() => {
+    void reload()
+  }, [reload])
+
+  const toggle = useCallback(
+    async (name: string, enabled: boolean) => {
+      if (!session) return
+      setBusy(name)
+      setError(null)
+      // optimistic
+      setSkills((cur) => cur.map((s) => (s.name === name ? { ...s, enabled } : s)))
+      try {
+        await setSkillEnabled(session, name, enabled)
+      } catch (e) {
+        setSkills((cur) => cur.map((s) => (s.name === name ? { ...s, enabled: !enabled } : s)))
+        setError((e as Error).message)
+      } finally {
+        setBusy(null)
+      }
+    },
+    [session],
+  )
+
+  const remove = useCallback(
+    async (name: string) => {
+      if (!session) return
+      setBusy(name)
+      setError(null)
+      try {
+        await deleteSkill(session, name)
+        setSkills((cur) => cur.filter((s) => s.name !== name))
+      } catch (e) {
+        setError((e as Error).message)
+      } finally {
+        setBusy(null)
+      }
+    },
+    [session],
+  )
+
+  return (
+    <section>
+      <header className="mb-6">
+        <h1 className="mb-1 font-display text-2xl font-semibold text-t-bright">Skills</h1>
+        <p className="text-sm text-t-muted">
+          Turn skills on or off. A disabled skill is hidden from the assistant entirely.
+        </p>
+      </header>
+
+      {!session && !error && <OpeningSession />}
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+      {loading && session && <LoadingLine>Loading skills…</LoadingLine>}
+      {!loading && session && skills.length === 0 && (
+        <p className="text-sm text-t-muted">No skills available yet.</p>
+      )}
+
+      <div className="space-y-2">
+        {skills.map((s) => (
+          <div
+            key={s.name}
+            className="flex items-start justify-between gap-3 rounded border border-t-border bg-t-surface p-3"
+          >
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="font-display text-sm text-t-bright">{s.name}</span>
+                {s.source === 'user' && (
+                  <span className="rounded-full border border-t-border bg-t-hover px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-t-muted">
+                    custom
+                  </span>
+                )}
+              </div>
+              <p className="mt-0.5 text-sm text-t-muted">{s.description}</p>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              {s.source === 'user' && (
+                <button
+                  type="button"
+                  onClick={() => remove(s.name)}
+                  disabled={busy === s.name}
+                  className="rounded border border-t-border px-2 py-1 text-[11px] uppercase tracking-wider text-t-muted transition-colors hover:border-t-accent-alt hover:text-t-accent-alt disabled:opacity-50"
+                  aria-label={`Delete ${s.name}`}
+                >
+                  Delete
+                </button>
+              )}
+              <Toggle
+                on={s.enabled}
+                busy={busy === s.name}
+                onClick={() => toggle(s.name, !s.enabled)}
+                label={`${s.enabled ? 'Disable' : 'Enable'} ${s.name}`}
+              />
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  )
+}
+
+function Toggle({
+  on,
+  busy,
+  onClick,
+  label,
+}: {
+  on: boolean
+  busy: boolean
+  onClick: () => void
+  label: string
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      aria-label={label}
+      disabled={busy}
+      onClick={onClick}
+      className={[
+        'relative inline-block h-5 w-9 shrink-0 rounded-full transition-colors disabled:opacity-50',
+        on ? 'bg-t-accent' : 'bg-t-border',
+      ].join(' ')}
+    >
+      <span
+        className={[
+          'absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all',
+          on ? 'left-4' : 'left-0.5',
+        ].join(' ')}
+      />
+    </button>
+  )
+}
+
+// ---------- Memory section (#5) -------------------------------------------
+//
+// The persistent memory the assistant reads on every turn. One shared
+// freeform-markdown store the user can view, edit, and clear.
+
+function MemorySection({ session }: { session: HarnessSessionHandle | null }) {
+  const [text, setText] = useState('')
+  const [initial, setInitial] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [savedAt, setSavedAt] = useState<number | null>(null)
+
+  const reload = useCallback(async () => {
+    if (!session) return
+    setLoading(true)
+    setError(null)
+    try {
+      const m = await getMemory(session)
+      setText(m)
+      setInitial(m)
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setLoading(false)
+    }
+  }, [session])
+
+  useEffect(() => {
+    void reload()
+  }, [reload])
+
+  const save = useCallback(async () => {
+    if (!session) return
+    setSaving(true)
+    setError(null)
+    try {
+      await putMemory(session, text)
+      setInitial(text)
+      setSavedAt(Date.now())
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setSaving(false)
+    }
+  }, [session, text])
+
+  const clear = useCallback(async () => {
+    if (!session) return
+    setSaving(true)
+    setError(null)
+    try {
+      await clearMemory(session)
+      setText('')
+      setInitial('')
+      setSavedAt(Date.now())
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setSaving(false)
+    }
+  }, [session])
+
+  const [showSaved, setShowSaved] = useState(false)
+  useEffect(() => {
+    if (savedAt == null) return
+    setShowSaved(true)
+    const t = window.setTimeout(() => setShowSaved(false), 2000)
+    return () => window.clearTimeout(t)
+  }, [savedAt])
+
+  const dirty = text !== initial
+
+  return (
+    <section>
+      <header className="mb-6">
+        <h1 className="mb-1 font-display text-2xl font-semibold text-t-bright">Memory</h1>
+        <p className="text-sm text-t-muted">
+          What the assistant remembers across conversations. It reads this on every message and
+          can append to it itself — edit or clear it here.
+        </p>
+      </header>
+
+      {!session && !error && <OpeningSession />}
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+      {loading && session && <LoadingLine>Loading memory…</LoadingLine>}
+
+      {session && !loading && (
+        <>
+          <textarea
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            rows={16}
+            placeholder="Nothing remembered yet. Anything you write here shapes future answers."
+            className="w-full rounded border border-t-border bg-t-surface px-3 py-2 font-mono text-sm text-t-bright transition-colors focus:border-t-accent focus:outline-none focus:ring-1 focus:ring-t-accent"
+          />
+          <div className="mt-4 flex items-center justify-end gap-3 border-t border-t-border pt-4">
+            {showSaved && (
+              <span className="text-xs uppercase tracking-wider text-t-accent">Saved</span>
+            )}
+            <button
+              type="button"
+              onClick={clear}
+              disabled={saving || (text === '' && initial === '')}
+              className="rounded border border-t-border px-4 py-2 text-sm font-medium text-t-muted transition-colors hover:border-t-accent-alt hover:text-t-accent-alt disabled:opacity-50"
+            >
+              Clear
+            </button>
+            <button
+              type="button"
+              onClick={save}
+              disabled={saving || !dirty}
+              className="rounded border border-t-accent bg-t-accent/10 px-4 py-2 text-sm font-medium text-t-bright transition-colors hover:bg-t-accent/20 disabled:opacity-50"
+            >
+              {saving ? 'Saving…' : 'Save'}
+            </button>
+          </div>
+        </>
+      )}
+    </section>
+  )
+}
+
+// ---------- Shared small bits for the new sections ------------------------
+
+function OpeningSession() {
+  return (
+    <p className="text-xs uppercase tracking-wider text-t-muted">Opening session…</p>
+  )
+}
+
+function LoadingLine({ children }: { children: React.ReactNode }) {
+  return <p className="text-xs uppercase tracking-wider text-t-muted">{children}</p>
+}
+
+function ErrorBanner({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="mb-6 rounded border border-t-accent-alt/40 bg-t-accent-alt/5 px-4 py-3 text-sm text-t-accent-alt">
+      {children}
+    </div>
   )
 }
 
@@ -848,14 +1265,6 @@ function errorMatches(error: FieldError | null, fieldKey: string): boolean {
   return error.field === fieldKey
 }
 
-// ---------- Path detection ------------------------------------------------
-
-/** Exported so <App /> can decide whether to render <SettingsPage /> or
- *  the chat surface. Compares against `${BASE_URL}settings(/...)`. */
-export function isSettingsPath(): boolean {
-  if (typeof window === 'undefined') return false
-  const base = import.meta.env.BASE_URL
-  const path = window.location.pathname
-  return path === `${base}settings` || path.startsWith(`${base}settings/`)
-}
+// `isSettingsPath` moved to ../lib/settings-path so App can route without
+// statically importing this (lazy-loaded) module — see PERF-03.
 

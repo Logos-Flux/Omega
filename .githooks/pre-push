@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Pre-push gate — mirrors .github/workflows/ci.yml so a red commit never
+# leaves the machine. Runs the full typecheck matrix + the test suite against
+# the working tree's current install (no reinstall — keep it fast).
+#
+# Enable once per clone:  git config core.hooksPath .githooks
+# Bypass for a known-safe push:  git push --no-verify
+set -uo pipefail
+
+root="$(git rev-parse --show-toplevel)"
+cd "$root" || exit 1
+
+# Same app list as ci.yml's typecheck matrix.
+apps=(
+  apps/chat-api
+  apps/chat-frontend
+  apps/controller
+  apps/pi-harness
+  apps/rag-api/api
+  apps/rag-api/ingest
+)
+
+fail=0
+
+echo "▶ pre-push: typecheck (${#apps[@]} apps)"
+for app in "${apps[@]}"; do
+  if [ ! -d "$app" ]; then
+    echo "  ⚠ $app missing — skipping"
+    continue
+  fi
+  if ( cd "$app" && bun tsc --noEmit ) >/tmp/tsc.$$.log 2>&1; then
+    echo "  ✓ $app"
+  else
+    echo "  ✗ $app — typecheck failed:"
+    sed 's/^/      /' /tmp/tsc.$$.log
+    fail=1
+  fi
+done
+rm -f /tmp/tsc.$$.log
+
+echo "▶ pre-push: bun test"
+if bun test; then
+  echo "  ✓ tests passed"
+else
+  echo "  ✗ tests failed"
+  fail=1
+fi
+
+if [ "$fail" -ne 0 ]; then
+  echo ""
+  echo "✗ pre-push blocked — fix the above, or override with: git push --no-verify"
+  exit 1
+fi
+
+echo "✓ pre-push checks green"
+exit 0

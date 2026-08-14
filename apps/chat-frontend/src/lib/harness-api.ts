@@ -141,6 +141,73 @@ async function harnessFetch<T>(
   return (await res.json()) as T
 }
 
+// ---------- Agent-mode conversation history (thread switcher) ----------
+
+export interface ConversationMeta {
+  id: string
+  title: string | null
+  updatedAt: string
+  messageCount: number
+}
+
+export interface ConversationLine {
+  ts: string
+  role: 'user' | 'assistant'
+  text: string
+  provider?: string
+  model?: string
+  id?: string
+  partial?: boolean
+}
+
+// One cached session for the switcher's read-only history calls (list + load),
+// so polling the thread list doesn't mint a new controller session per call.
+// The chat surface keeps its own active session via the transport; this is
+// only for metadata reads outside that tree (mirrors the settings page's
+// session caching). The conversations the user actually sees in the list are
+// filtered to non-empty ones, so this session's own (empty) shell never shows.
+let metaSession: Promise<HarnessSessionHandle> | null = null
+function getMetaSession(): Promise<HarnessSessionHandle> {
+  if (!metaSession) {
+    metaSession = openSession().catch((e) => {
+      metaSession = null
+      throw e
+    })
+  }
+  return metaSession
+}
+
+// Run a harness call against the cached meta-session; if the token has expired
+// (401), drop the cache and retry once with a fresh session.
+async function withMetaSession<T>(fn: (s: HarnessSessionHandle) => Promise<T>): Promise<T> {
+  try {
+    return await fn(await getMetaSession())
+  } catch (e) {
+    if ((e as { status?: number }).status === 401) {
+      metaSession = null
+      return fn(await getMetaSession())
+    }
+    throw e
+  }
+}
+
+export async function listAgentSessions(): Promise<ConversationMeta[]> {
+  return withMetaSession(async (session) => {
+    const data = await harnessFetch<{ sessions: ConversationMeta[] }>(session, '/conversations')
+    return data.sessions ?? []
+  })
+}
+
+export async function loadAgentSession(id: string): Promise<ConversationLine[]> {
+  return withMetaSession(async (session) => {
+    const data = await harnessFetch<{ id: string; lines: ConversationLine[] }>(
+      session,
+      `/conversations/${encodeURIComponent(id)}`,
+    )
+    return data.lines ?? []
+  })
+}
+
 export async function getProfile(session: HarnessSessionHandle): Promise<Profile> {
   const data = await harnessFetch<{ profile: Profile }>(session, '/profile')
   return data.profile ?? {}
@@ -182,4 +249,68 @@ export async function rejectProposal(
   await harnessFetch(session, `/profile/proposals/${encodeURIComponent(id)}/reject`, {
     method: 'POST',
   })
+}
+
+// ---------- Skills (#3 toggle + #4 generated-skill management) ------------
+
+export interface SkillInfo {
+  name: string
+  description: string
+  /** Flat per-user toggle — false means hidden from the agent. */
+  enabled: boolean
+  /** 'user' skills (agent-created) are deletable; 'baked' golden skills aren't. */
+  source: 'user' | 'baked'
+}
+
+export async function getSkills(session: HarnessSessionHandle): Promise<SkillInfo[]> {
+  const data = await harnessFetch<{ skills: SkillInfo[] }>(session, '/skills')
+  return data.skills ?? []
+}
+
+export async function setSkillEnabled(
+  session: HarnessSessionHandle,
+  name: string,
+  enabled: boolean,
+): Promise<void> {
+  await harnessFetch(session, `/skills/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    body: JSON.stringify({ enabled }),
+  })
+}
+
+export async function deleteSkill(session: HarnessSessionHandle, name: string): Promise<void> {
+  await harnessFetch(session, `/skills/${encodeURIComponent(name)}`, { method: 'DELETE' })
+}
+
+// ---------- Memory (#5) ----------------------------------------------------
+
+export async function getMemory(session: HarnessSessionHandle): Promise<string> {
+  const data = await harnessFetch<{ memory: string }>(session, '/memory')
+  return data.memory ?? ''
+}
+
+export async function putMemory(session: HarnessSessionHandle, memory: string): Promise<void> {
+  await harnessFetch(session, '/memory', { method: 'PUT', body: JSON.stringify({ memory }) })
+}
+
+export async function clearMemory(session: HarnessSessionHandle): Promise<void> {
+  await harnessFetch(session, '/memory', { method: 'DELETE' })
+}
+
+// ---------- Personas (#6) --------------------------------------------------
+
+export interface PersonaInfo {
+  name: string
+  label: string
+}
+
+export async function listPersonas(
+  session: HarnessSessionHandle,
+): Promise<{ personas: PersonaInfo[]; active: string }> {
+  const data = await harnessFetch<{ personas: PersonaInfo[]; active: string }>(session, '/personas')
+  return { personas: data.personas ?? [], active: data.active ?? 'default' }
+}
+
+export async function setPersona(session: HarnessSessionHandle, name: string): Promise<void> {
+  await harnessFetch(session, '/persona', { method: 'PUT', body: JSON.stringify({ name }) })
 }

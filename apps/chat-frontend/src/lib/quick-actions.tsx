@@ -28,6 +28,12 @@ export interface QuickAction {
   /** Small ribbon in the corner of the card ("New", "Beta",
    *  "Coming soon"). Purely cosmetic. */
   badge?: string
+  /** Optional navigation target. When present, the default onSelect
+   *  handler routes the user here (same tab for same-origin, new tab
+   *  otherwise). Operators can ignore this and supply their own
+   *  onSelect for custom behavior (e.g. inserting the label as a
+   *  composer prompt). */
+  href?: string
 }
 
 export interface QuickActionsContextValue {

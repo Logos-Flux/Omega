@@ -14,6 +14,32 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src'),
     },
   },
+  // PERF-03 — split the heavy, rarely-changing vendor code out of the app
+  // entry chunk so the ~950 KB monolith stops re-downloading on every app
+  // deploy and the entry shrinks. React core and the assistant-ui/ai-sdk
+  // stack are the two big stable blocks.
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return
+          if (
+            id.includes('node_modules/react-dom') ||
+            id.includes('node_modules/react/') ||
+            id.includes('node_modules/scheduler')
+          )
+            return 'react-vendor'
+          if (
+            id.includes('node_modules/@assistant-ui') ||
+            id.includes('node_modules/@ai-sdk') ||
+            id.includes('node_modules/ai/')
+          )
+            return 'assistant-vendor'
+          return 'vendor'
+        },
+      },
+    },
+  },
   server: {
     port: 5175,
     host: '0.0.0.0',

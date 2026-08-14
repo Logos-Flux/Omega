@@ -11,11 +11,15 @@
     "type-check": "tsc -b --noEmit"
   },
   "dependencies": {
-    "@omega-inc/app-shell": "workspace:*",
     "@ai-sdk/react": "^4.0.5",
     "@assistant-ui/react": "^0.15.13",
     "@assistant-ui/react-ai-sdk": "^1.4.5",
     "@assistant-ui/react-markdown": "^0.14.10",
+    "@fontsource/inter": "^5.2.8",
+    "@fontsource/jetbrains-mono": "^5.2.8",
+    "@fontsource/playfair-display": "^5.2.8",
+    "@fontsource/space-grotesk": "^5.2.10",
+    "@omega-inc/app-shell": "workspace:*",
     "ai": "^7.0.4",
     "clsx": "^2.1.1",
     "lucide-react": "^1.31.0",
@@ -30,6 +34,7 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^6.0.1",
+    "happy-dom": "^20.11.0",
     "tailwindcss": "^4.2.0",
     "typescript": "^7.0.2",
     "vite": "^8.0.10"

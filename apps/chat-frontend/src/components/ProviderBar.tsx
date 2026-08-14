@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import {
   PROVIDERS,
   useProviderSelection,
@@ -10,7 +11,7 @@ import { useThreadNav } from '../App'
 import { cn } from '../lib/cn'
 import { useSpriteWarmup } from '../lib/sprite-warmup'
 
-const ORDER: ProviderId[] = ['anthropic', 'google', 'perplexity']
+const ORDER: ProviderId[] = ['anthropic', 'google', 'perplexity', 'deepseek']
 
 export function ProviderBar() {
   const { provider, tier, model, setProvider, setTier } = useProviderSelection()
@@ -24,6 +25,14 @@ export function ProviderBar() {
   const lockActive = !agentMode && lock.provider !== null && lock.model !== null
   const mismatched =
     lockActive && (lock.provider !== provider || lock.model !== model)
+
+  // Perplexity isn't a usable agentic backend (the harness wires no tool /
+  // grounding support for it), so it's disabled in Agent Mode. If it was the
+  // active provider when Agent Mode flips on, fall back to Anthropic so the
+  // harness never receives a perplexity selection.
+  useEffect(() => {
+    if (agentMode && provider === 'perplexity') setProvider('anthropic')
+  }, [agentMode, provider, setProvider])
 
   const startFreshWithCurrent = () => {
     // newThread() drops the lock; the next /api/chat response will lock the
@@ -41,6 +50,8 @@ export function ProviderBar() {
               id={id}
               label={PROVIDERS[id].label}
               active={provider === id}
+              disabled={agentMode && id === 'perplexity'}
+              disabledTitle="Turn off Agent Mode to use Perplexity"
               onClick={() => setProvider(id)}
             />
           ))}
@@ -159,21 +170,28 @@ interface LogoButtonProps {
   label: string
   active: boolean
   onClick: () => void
+  disabled?: boolean
+  /** Hover tooltip shown when disabled (e.g. "Turn off Agent Mode to use Perplexity"). */
+  disabledTitle?: string
 }
 
-function ProviderLogo({ id, label, active, onClick }: LogoButtonProps) {
+function ProviderLogo({ id, label, active, onClick, disabled = false, disabledTitle }: LogoButtonProps) {
   return (
     <button
       type="button"
-      onClick={onClick}
-      title={label}
+      onClick={disabled ? undefined : onClick}
+      title={disabled ? (disabledTitle ?? label) : label}
       aria-label={label}
       aria-pressed={active}
+      aria-disabled={disabled}
+      disabled={disabled}
       className={cn(
         'relative flex h-9 w-9 items-center justify-center rounded-md border transition-all',
-        active
-          ? 'border-t-accent-alt bg-t-accent-alt text-white shadow-[0_0_0_2px_rgba(255,90,78,0.18)]'
-          : 'border-t-border bg-t-surface text-t-muted hover:border-t-border-active hover:text-t-bright',
+        disabled
+          ? 'cursor-not-allowed border-t-border bg-t-surface text-t-muted/40 opacity-50'
+          : active
+            ? 'border-t-accent-alt bg-t-accent-alt text-white shadow-[0_0_0_2px_rgba(255,90,78,0.18)]'
+            : 'border-t-border bg-t-surface text-t-muted hover:border-t-border-active hover:text-t-bright',
       )}
     >
       <ProviderMark id={id} />
@@ -189,6 +207,8 @@ function ProviderMark({ id }: { id: ProviderId }) {
       return <GeminiMark />
     case 'perplexity':
       return <PerplexityMark />
+    case 'deepseek':
+      return <DeepSeekMark />
   }
 }
 
@@ -218,6 +238,16 @@ function PerplexityMark() {
       <path d="M12 3L5 7" />
       <path d="M12 21l-7-4" />
       <path d="M12 21l7-4" />
+    </svg>
+  )
+}
+
+// DeepSeek — a stylized breaching whale, echoing the brand mark.
+function DeepSeekMark() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5">
+      <path d="M3 14c2.5 0 3.5-1.5 5.5-1.5 1.6 0 2.4 1 4 1 2.3 0 3.6-2.2 6-5.5-.4 4-1.2 6.4-3.4 8.1-1.7 1.3-4 1.9-6.1 1.4C6.8 16.4 4.6 15.4 3 14z" />
+      <circle cx="17" cy="9" r="0.6" fill="currentColor" stroke="none" />
     </svg>
   )
 }

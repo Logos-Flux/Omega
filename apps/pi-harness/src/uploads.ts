@@ -1,12 +1,18 @@
 import { mkdir, readdir, readFile, stat, unlink, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { basename, join } from 'node:path'
+import { createHash } from 'node:crypto'
 import { workspaceRoot } from './memory'
 
 function uploadsDir(): string {
   return join(workspaceRoot(), 'uploads')
 }
-export const MAX_BYTES = 1_000_000 // 1MB
+// Default raised from 1 MB → 100 MB on 2026-05-14 — 1 MB rejected any
+// real-world doc. Override via `MAX_UPLOAD_BYTES` env on the harness
+// (controller's provision-user/update-user pass-through if you want it
+// non-default per-deploy). Must be at least as permissive as the client
+// cap in chat-frontend's `harness-utils.ts:MAX_UPLOAD_BYTES`.
+export const MAX_BYTES = Number(process.env.MAX_UPLOAD_BYTES) || 100_000_000
 const SESSION_RX = /^[A-Za-z0-9_-]{1,80}$/
 
 export interface UploadInfo {
@@ -16,7 +22,17 @@ export interface UploadInfo {
 }
 
 function safeFilename(name: string): string {
-  return basename(name).replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 200)
+  const base = basename(name)
+  const sanitized = base.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 200)
+  // BUG-14 — when sanitization was LOSSY (e.g. two different CJK names both
+  // collapse to "__.pdf"), distinct uploads would map to the same path and
+  // silently overwrite each other. Append a short hash of the ORIGINAL name
+  // so the mapping stays injective. Names that survive sanitization unchanged
+  // keep their exact filename (no hash noise).
+  if (sanitized === base) return sanitized
+  const h = createHash('sha256').update(base).digest('hex').slice(0, 8)
+  const dot = sanitized.lastIndexOf('.')
+  return dot > 0 ? `${sanitized.slice(0, dot)}-${h}${sanitized.slice(dot)}` : `${sanitized}-${h}`
 }
 
 function safeSessionId(sessionId: string): string {

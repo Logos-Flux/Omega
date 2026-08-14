@@ -1,4 +1,4 @@
-import { readdir, readFile, rename, writeFile, appendFile } from 'node:fs/promises'
+import { readdir, readFile, rename, stat, writeFile, appendFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -72,15 +72,27 @@ export async function appendConversation(sessionId: string, line: ConversationLi
 
 export async function readConversation(sessionId: string): Promise<ConversationLine[]> {
   const path = join(conversationsDir(), `${sessionId}.jsonl`)
+  let text: string
   try {
-    const text = await readFile(path, 'utf8')
-    return text
-      .split('\n')
-      .filter(Boolean)
-      .map((l) => JSON.parse(l) as ConversationLine)
+    text = await readFile(path, 'utf8')
   } catch {
+    // No file yet (new session) — empty history.
     return []
   }
+  // BUG-18 — parse line-by-line and SKIP corrupt lines rather than letting a
+  // single bad JSON line (a partial append after a crash, a truncated write)
+  // collapse the entire conversation to []. Losing one line is recoverable;
+  // losing the whole thread silently is not.
+  const out: ConversationLine[] = []
+  for (const line of text.split('\n')) {
+    if (!line) continue
+    try {
+      out.push(JSON.parse(line) as ConversationLine)
+    } catch {
+      console.warn(`[memory] skipping corrupt conversation line in ${sessionId}.jsonl`)
+    }
+  }
+  return out
 }
 
 export async function listConversations(): Promise<string[]> {
@@ -90,6 +102,49 @@ export async function listConversations(): Promise<string[]> {
   } catch {
     return []
   }
+}
+
+export interface ConversationMeta {
+  id: string
+  /** First user message, trimmed to a one-line title. null if the session has no user turn yet. */
+  title: string | null
+  /** ISO timestamp of the file's last write — used to sort newest-first. */
+  updatedAt: string
+  messageCount: number
+}
+
+/**
+ * List every conversation on this (single-user) sprite with enough metadata to
+ * render a thread switcher: a title derived from the first user message, the
+ * last-modified time, and a message count. Empty sessions (no lines) are
+ * dropped — they're the just-minted shells that haven't been used.
+ *
+ * Single-user-sprite note: every jsonl here belongs to the one user the sprite
+ * was provisioned for, so returning all of them to a holder of a valid user
+ * token is the user's own data (see the caller in index.ts — this supersedes
+ * the earlier SEC-07 single-session scoping, which was over-strict for the
+ * per-user-sprite model and made past chats unreachable).
+ */
+export async function listConversationsWithMeta(): Promise<ConversationMeta[]> {
+  const ids = await listConversations()
+  const metas = await Promise.all(
+    ids.map(async (id): Promise<ConversationMeta | null> => {
+      const lines = await readConversation(id)
+      if (lines.length === 0) return null
+      const firstUser = lines.find((l) => l.role === 'user')
+      const title = firstUser ? firstUser.text.replace(/\s+/g, ' ').trim().slice(0, 80) : null
+      let updatedAt: string
+      try {
+        updatedAt = (await stat(join(conversationsDir(), `${id}.jsonl`))).mtime.toISOString()
+      } catch {
+        updatedAt = lines[lines.length - 1]?.ts ?? new Date(0).toISOString()
+      }
+      return { id, title, updatedAt, messageCount: lines.length }
+    }),
+  )
+  return metas
+    .filter((m): m is ConversationMeta => m !== null)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
 }
 
 /**

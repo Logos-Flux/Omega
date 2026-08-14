@@ -27,3 +27,15 @@ dev-docs/
 # See apps/controller/goldens/README.md.
 apps/controller/goldens/*/
 !apps/controller/goldens/example/
+
+# Operator-specific chat-frontend Caddyfiles. The OSS Caddyfile in this
+# directory is the dev/local default; operators copy their own variant
+# (e.g. Caddyfile.prod, Caddyfile.staging) into the tree at deploy time so
+# the apps/chat-frontend/Dockerfile can COPY it into the image. The
+# canonical home for these is the operator's deploy repo.
+apps/chat-frontend/Caddyfile.local*
+apps/chat-frontend/Caddyfile.prod*
+apps/chat-frontend/Caddyfile.staging*
+
+# Local Hermes agent scratch (plans, transcripts)
+.hermes/

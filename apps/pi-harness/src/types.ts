@@ -58,6 +58,10 @@ export interface Invocation {
   prompt: string
   provider: ProviderId
   model: string
+  /** IANA timezone for anchoring "today" + current time in the system
+   *  prompt. Sourced from the inbound send frame; the assembler falls back
+   *  to profile.timezone and then UTC when absent. */
+  timezone?: string
   budget: BudgetSpec
   policy: PolicySpec
   delivery: DeliveryChannel
@@ -98,6 +102,10 @@ export interface IncomingSend {
   content: string
   provider?: string
   model?: string
+  /** IANA timezone of the sender's browser (e.g. "America/New_York"). Sent
+   *  per-message so the assembler can localize "today" + the current time.
+   *  Optional; absent frames fall back to profile.timezone, then UTC. */
+  timezone?: string
 }
 
 /**

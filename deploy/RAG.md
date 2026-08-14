@@ -443,7 +443,7 @@ extra fields:
 | `filesystem_file_count` | Count of `source_kind='filesystem'` rows in the user's `user_file_access` |
 | `filesystem_last_walk_ts` | Most recent finished filesystem-source crawl (`MAX(last_indexed_at)`) |
 
-These are omitted (not null) on drive-mode payloads so 52L's response
+These are omitted (not null) on drive-mode payloads so the drive-mode response
 shape is unchanged.
 
 ### Migrating drive → filesystem

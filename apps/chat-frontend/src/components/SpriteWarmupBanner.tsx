@@ -31,7 +31,11 @@ export function SpriteWarmupBanner() {
         ? 'Chat works normally. Contact your admin to enable agent mode.'
         : 'Your sprite was reset. Chat works normally; contact your admin to re-provision.'
     return (
-      <div className="flex items-center gap-3 border-b border-t-warning/40 bg-t-warning/10 px-4 py-2">
+      <div
+        role="status"
+        aria-live="polite"
+        className="flex items-center gap-3 border-b border-t-warning/40 bg-t-warning/10 px-4 py-2"
+      >
         <span className="font-display text-[10px] uppercase tracking-[0.18em] text-t-warning">
           {headline}
         </span>
@@ -42,7 +46,10 @@ export function SpriteWarmupBanner() {
 
   if (state.kind === 'failed') {
     return (
-      <div className="flex items-center gap-3 border-b border-t-warning/40 bg-t-warning/10 px-4 py-2">
+      <div
+        role="alert"
+        className="flex items-center gap-3 border-b border-t-warning/40 bg-t-warning/10 px-4 py-2"
+      >
         <span className="font-display text-[10px] uppercase tracking-[0.18em] text-t-warning">
           Agent setup failed
         </span>
@@ -62,7 +69,11 @@ export function SpriteWarmupBanner() {
 
   // provisioning
   return (
-    <div className="flex items-center gap-3 border-b border-t-accent-alt/40 bg-t-accent-alt/5 px-4 py-2">
+    <div
+      role="status"
+      aria-live="polite"
+      className="flex items-center gap-3 border-b border-t-accent-alt/40 bg-t-accent-alt/5 px-4 py-2"
+    >
       <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-t-accent-alt animate-pulse" />
       <span className="font-display text-[10px] uppercase tracking-[0.18em] text-t-accent-alt">
         Preparing your agent environment

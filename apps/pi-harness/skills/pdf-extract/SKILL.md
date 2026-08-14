@@ -33,9 +33,10 @@ clean plain text, then work with that.
 - 100 KB stdout cap (per `exec` rules). For longer PDFs, the text will
   be truncated; mention this in your reply.
 - 30s timeout. Most PDFs return in under a second.
-- No OCR. If `pdftotext` returns mostly empty (a few page-feeds and
-  little text), the PDF is probably scanned. Tell the user we don't
-  have OCR yet rather than fabricating content.
+- If `pdftotext` returns mostly empty (a few page-feeds and little
+  text), the PDF is probably scanned (images, not text). Switch to the
+  `ocr` skill — its "scanned PDFs" protocol rasterises the pages with
+  pdftoppm and runs tesseract over them. Don't fabricate content.
 
 ## Voice
 

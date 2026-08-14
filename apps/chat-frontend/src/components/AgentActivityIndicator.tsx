@@ -18,7 +18,13 @@ export function AgentActivityIndicator() {
   if (phase.kind === 'idle' && !session) return null
 
   return (
-    <div className="flex items-center gap-2 border-b border-t-border bg-t-surface/60 px-4 py-1.5">
+    // UX-08 — announce phase changes to assistive tech. The multi-second
+    // Starting/Connecting/Thinking gaps were invisible to screen-reader users.
+    <div
+      role="status"
+      aria-live="polite"
+      className="flex items-center gap-2 border-b border-t-border bg-t-surface/60 px-4 py-1.5"
+    >
       <PhaseDot phase={phase} />
       <span className="font-display text-[10px] uppercase tracking-[0.18em] text-t-bright">
         {phaseTitle(phase)}
@@ -60,6 +66,8 @@ function phaseTitle(phase: HarnessPhase): string {
       return `Running ${phase.tool}`
     case 'streaming':
       return 'Streaming response'
+    case 'disconnected':
+      return 'Connection dropped'
   }
 }
 

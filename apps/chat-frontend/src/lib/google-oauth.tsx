@@ -23,22 +23,26 @@ import {
   type ReactNode,
 } from 'react'
 
-import { readWithLegacyKey } from './storage'
-
 const API_BASE = (import.meta.env.BASE_URL ?? '/').replace(/\/$/, '')
 const HEALTH_URL = `${API_BASE}/api/controller/api/oauth/google/health`
 const SKIP_KEY = 'omega.chat.googleConnect.skipped'
-const LEGACY_SKIP_KEY = '52l.chat.googleConnect.skipped'
+
+// The Drive write scope. When a connected user's grant predates the scope
+// widening (was drive.readonly), they need to re-consent to unlock Drive
+// uploads/copies — surfaced as a non-blocking banner rather than a hidden URL.
+const REQUIRED_DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive'
 
 export type GoogleStatusState =
   | { kind: 'loading' }
   | { kind: 'error'; message: string }
-  | { kind: 'ready'; connected: boolean }
+  | { kind: 'ready'; connected: boolean; staleScopes: boolean }
 
 interface GoogleOAuthValue {
   state: GoogleStatusState
   /** True if the user clicked "Skip for now" this session. */
   skipped: boolean
+  /** Connected, but the grant is missing a scope we now require (re-consent). */
+  needsReconsent: boolean
   refresh: () => Promise<void>
   skipForSession: () => void
 }
@@ -63,7 +67,7 @@ export function GoogleOAuthProvider({ children }: { children: ReactNode }) {
   const [skipped, setSkipped] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false
     try {
-      return readWithLegacyKey(window.sessionStorage, SKIP_KEY, LEGACY_SKIP_KEY) === '1'
+      return window.sessionStorage.getItem(SKIP_KEY) === '1'
     } catch {
       return false
     }
@@ -81,7 +85,11 @@ export function GoogleOAuthProvider({ children }: { children: ReactNode }) {
       }
       const data = (await res.json()) as GoogleHealthResponse
       if (data.ok) {
-        setState({ kind: 'ready', connected: true })
+        setState({
+          kind: 'ready',
+          connected: true,
+          staleScopes: !data.scopes.includes(REQUIRED_DRIVE_SCOPE),
+        })
         return
       }
       // Transient + misconfigured are server-side problems we don't want to
@@ -97,7 +105,7 @@ export function GoogleOAuthProvider({ children }: { children: ReactNode }) {
         return
       }
       // no_grant | revoked | decrypt_failed → user needs to (re)consent.
-      setState({ kind: 'ready', connected: false })
+      setState({ kind: 'ready', connected: false, staleScopes: false })
     } catch (err) {
       const message = err instanceof Error ? err.message : 'network error'
       setState({ kind: 'error', message })
@@ -118,9 +126,11 @@ export function GoogleOAuthProvider({ children }: { children: ReactNode }) {
     void refresh()
   }, [refresh])
 
+  const needsReconsent = state.kind === 'ready' && state.connected && state.staleScopes
+
   const value = useMemo<GoogleOAuthValue>(
-    () => ({ state, skipped, refresh, skipForSession }),
-    [state, skipped, refresh, skipForSession],
+    () => ({ state, skipped, needsReconsent, refresh, skipForSession }),
+    [state, skipped, needsReconsent, refresh, skipForSession],
   )
 
   return <GoogleOAuthContext.Provider value={value}>{children}</GoogleOAuthContext.Provider>

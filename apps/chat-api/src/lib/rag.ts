@@ -91,6 +91,9 @@ export async function searchRag(
         query: args.query,
         top_k: args.topK,
       }),
+      // DB-29 — bound the call so a wedged/slow rag-api can't stall a chat turn
+      // indefinitely (this runs inside the model's tool loop).
+      signal: AbortSignal.timeout(15_000),
     })
   } catch (err) {
     return { error: `rag-api unreachable: ${(err as Error).message}` }
