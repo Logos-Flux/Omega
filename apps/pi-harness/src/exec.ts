@@ -9,6 +9,14 @@ import { workspaceRoot } from './memory'
 // decision: it must be installed in the sprite and safe to expose.
 export const EXEC_ALLOWLIST = new Set([
   'pdftotext',
+  // OCR: tesseract reads an image and prints recognised text to stdout.
+  // pdftoppm (poppler-utils, already installed for pdftotext) rasterises a
+  // scanned PDF to PNG so it can be fed to tesseract — closing the
+  // "scanned PDF / no OCR" gap pdf-extract punts on. The `ocr` skill
+  // (apps/pi-harness/skills/ocr) drives both. tesseract needs the
+  // `tesseract-ocr` apt package in the sprite golden manifest.
+  'tesseract',
+  'pdftoppm',
   'pandoc',
   'gccli',
   'gdcli',
@@ -18,13 +26,27 @@ export const EXEC_ALLOWLIST = new Set([
 const TIMEOUT_MS = 30_000
 const MAX_OUTPUT_BYTES = 100_000 // 100 KB per stream
 
-// Env var name prefixes that get forwarded to allowlisted binaries.
-// Connectors (the gccli/gdcli/gmcli skills, future ones) need OAuth secrets in their env;
-// everything else stays scrubbed so we don't leak ANTHROPIC_API_KEY etc.
-// to subprocesses by accident.
-const CONNECTOR_ENV_PREFIXES = ['GOOGLE_', 'STRIPE_']
+// BUG-01 — explicit per-variable allowlist of env forwarded to `exec`/`shell`
+// children (both go through buildSandboxEnv). The previous `GOOGLE_`/`STRIPE_`
+// PREFIX forwarding leaked secrets: the controller injects GOOGLE_API_KEY (the
+// shared Gemini billing key) and GOOGLE_OAUTH_CLIENT_SECRET into the harness
+// env, and `exec env` / `shell env` printed them into model-visible output that
+// then persists into conversation.jsonl. The connectors (gccli/gdcli/gmcli)
+// read their OAuth credentials from ~/.gccli/accounts.json (written by the boot
+// shim), NOT from env, so nothing secret needs to cross into a child.
+//
+// Forward ONLY these explicitly-named, non-secret vars. Anything whose name
+// looks like a credential is refused even if added here by mistake.
+const EXEC_ENV_ALLOWLIST = new Set<string>([
+  // OAuth client id is not a secret; some connector code paths read it to
+  // instantiate an OAuth2Client. The matching *_CLIENT_SECRET is deliberately
+  // NOT forwarded — accounts.json carries it for the connectors that need it.
+  'GOOGLE_OAUTH_CLIENT_ID',
+])
 
-function buildSubprocessEnv(): Record<string, string> {
+const SECRET_NAME_RE = /(_KEY|_SECRET|_TOKEN|PASSWORD)$/i
+
+export function buildSandboxEnv(): Record<string, string> {
   // /.sprite/bin is on PATH so connectors that use `#!/usr/bin/env node`
   // (gccli/gdcli/gmcli, anything else npm-installed) can find their
   // interpreter. The rest is the standard FHS path.
@@ -32,9 +54,9 @@ function buildSubprocessEnv(): Record<string, string> {
     PATH: '/.sprite/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
     HOME: process.env.HOME ?? '/home/sprite',
   }
-  for (const [k, v] of Object.entries(process.env)) {
-    if (typeof v !== 'string') continue
-    if (CONNECTOR_ENV_PREFIXES.some((p) => k.startsWith(p))) out[k] = v
+  for (const k of EXEC_ENV_ALLOWLIST) {
+    const v = process.env[k]
+    if (typeof v === 'string' && v.length > 0 && !SECRET_NAME_RE.test(k)) out[k] = v
   }
   return out
 }
@@ -65,7 +87,7 @@ export async function runExec(
   const cwd = join(workspaceRoot(), 'uploads', sessionId)
   if (!existsSync(cwd)) await mkdir(cwd, { recursive: true })
   const start = Date.now()
-  const env = buildSubprocessEnv()
+  const env = buildSandboxEnv()
 
   // Bun.spawn passes argv[0] straight to posix_spawn — no PATH lookup.
   // Resolve to an absolute path against the subprocess PATH so connectors

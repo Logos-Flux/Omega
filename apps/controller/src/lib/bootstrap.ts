@@ -29,6 +29,8 @@
 
 import { spawn } from 'node:child_process'
 import { isAbsolute, join } from 'node:path'
+import { signMintToken } from '../routes/oauth'
+import { forwardedHarnessEnv } from './harness-env'
 
 export interface GoldenRef {
   version: string
@@ -37,6 +39,12 @@ export interface GoldenRef {
 
 export interface BootstrapOptions {
   golden: GoldenRef
+  /**
+   * The user the Sprite belongs to. Used to mint the per-sprite, userId-scoped
+   * Google mint token injected into the harness env (SEC-01). Required for the
+   * real provisioning path; tests that stub `resolveHarnessEnv` can omit it.
+   */
+  userId?: string
   /** Override the apply-golden command (tests inject a no-op). */
   runApplyGolden?: ApplyGoldenRunner
   /** Override the sprite CLI runner (tests inject a stub). */
@@ -73,7 +81,7 @@ export type ApplyGoldenRunner = (args: {
 export type SpriteCliRunner = (args: string[]) => Promise<SpawnResult>
 export type HealthzFetcher = (url: string) => Promise<{ ok: boolean; status: number; body: string }>
 export type SpriteUrlFetcher = (spriteName: string) => Promise<string>
-export type HarnessEnvResolver = () => Record<string, string>
+export type HarnessEnvResolver = (ctx: { userId: string }) => Record<string, string>
 
 class BootstrapError extends Error {
   constructor(
@@ -162,38 +170,45 @@ const defaultFetchSpriteUrl: SpriteUrlFetcher = async (spriteName) => {
   return body.url
 }
 
-const defaultResolveHarnessEnv: HarnessEnvResolver = () => {
-  const env: Record<string, string> = {
+export const defaultResolveHarnessEnv: HarnessEnvResolver = ({ userId }) => {
+  // OPS-25 — the forwarded var set is shared with the Docker provider path
+  // (compute/env.ts) via lib/harness-env.ts so the two backends can't drift
+  // (a missing var silently disables a feature on one backend only — the RAG
+  // env incident). The gccli/gdcli/gmcli shim's controller + OAuth vars and
+  // the RAG vars all live in that one list now.
+  return {
     WORKSPACE_ROOT: '/workspace',
     PORT: '8080',
+    ...forwardedHarnessEnv(),
+    // SEC-01 (M1) — per-sprite, userId-scoped Google mint credential, signed
+    // with CONTROLLER_MINT_SIGNING_KEY (which NEVER enters a Sprite, so a /proc
+    // exfil only yields THIS user's token). This is a per-USER COMPUTED value,
+    // not a process.env forward, so it lives here rather than in
+    // HARNESS_FORWARDED_ENV. It replaces CONTROLLER_SERVICE_TOKEN, which M1
+    // removed from the Sprite env (the cross-user mint vector) — that token is
+    // deliberately NOT in HARNESS_FORWARDED_ENV. The Docker path has no
+    // per-user provisioning, so it gets no mint token (Drive/gccli stay off
+    // there, as before) — the OPS-25 parity is over the forwarded subset only.
+    CONTROLLER_MINT_TOKEN: signMintToken({ userId }),
   }
-  // Provider keys + JWT signer come from the controller's own env.
-  // CONTROLLER_BASE_URL + CONTROLLER_SERVICE_TOKEN + the GOOGLE_OAUTH_*
-  // pair are the gccli/gdcli/gmcli boot shim's required vars (per
-  // pi-harness/CLAUDE.md "gccli/gdcli/gmcli boot shim"). Without all four
-  // the shim disables itself and the harness boots without populating
-  // ~/.gccli/accounts.json — gccli skills then prompt the model to run
-  // `gccli accounts add` manually, which is the regression we just spent
-  // a session fixing for the shared spike sprite. Pass them through.
-  for (const k of [
-    'ANTHROPIC_API_KEY',
-    'GOOGLE_API_KEY',
-    'PERPLEXITY_API_KEY',
-    'HARNESS_JWT_SECRET',
-    'CONTROLLER_BASE_URL',
-    'CONTROLLER_SERVICE_TOKEN',
-    'GOOGLE_OAUTH_CLIENT_ID',
-    'GOOGLE_OAUTH_CLIENT_SECRET',
-  ]) {
-    const v = process.env[k]
-    if (v) env[k] = v
-  }
-  return env
 }
 
 function envToFlag(env: Record<string, string>): string {
   return Object.entries(env)
-    .map(([k, v]) => `${k}=${v}`)
+    .map(([k, v]) => {
+      // BUG-20 — `sprite exec --env` is a single comma-delimited string, so a
+      // value containing a comma silently truncates itself AND corrupts every
+      // subsequent var (the parser reads the tail as new KEY=VALUE pairs).
+      // Fail loudly at bootstrap rather than ship a mangled harness env — the
+      // same silent-failure family as the RAG env incident.
+      if (v.includes(',')) {
+        throw new BootstrapError(
+          'env',
+          `value for ${k} contains a comma; the comma-delimited sprite --env flag cannot encode it`,
+        )
+      }
+      return `${k}=${v}`
+    })
     .join(',')
 }
 
@@ -349,7 +364,7 @@ export async function bootstrapSprite(spriteName: string, opts: BootstrapOptions
       }
     }
 
-    const env = envToFlag(resolveHarnessEnv())
+    const env = envToFlag(resolveHarnessEnv({ userId: opts.userId ?? '' }))
     // `sprite exec --tty` keeps the *remote* TTY session alive after the
     // local CLI process disconnects (per Sprites docs). The intended
     // operator workflow is interactive — run the command, see the

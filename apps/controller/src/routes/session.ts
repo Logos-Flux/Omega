@@ -5,6 +5,7 @@ import { latestGoldenForChannel, type Golden } from '../lib/golden'
 import { requireSession } from '../middleware/session'
 import { getComputeProvider } from '../compute'
 import { bootstrapSprite, type GoldenRef } from '../lib/bootstrap'
+import { harnessHealthy } from '../lib/harness-health'
 
 export const sessionRoutes = new Hono()
 
@@ -70,11 +71,32 @@ async function recordSessionStart(userId: string, containerName: string): Promis
   return res.rows[0]!.id
 }
 
-async function recordSessionEnd(sessionId: string): Promise<void> {
+/**
+ * Resume an existing session instead of minting a new one. Returns the session
+ * id iff it exists AND belongs to `userId` — so a client can't resume (and have
+ * a token minted for) someone else's session. Returns null when the id is
+ * unknown / not the user's, so the caller falls back to a fresh session.
+ * Without a DB we can't verify ownership, so we refuse to resume (return null).
+ */
+async function resumeSessionIfOwned(
+  sessionId: string,
+  userId: string,
+): Promise<string | null> {
+  if (!hasDatabase) return null
+  const res = await getPool().query<{ id: string }>(
+    `SELECT id FROM pi.sessions WHERE id = $1 AND user_id = $2`,
+    [sessionId, userId],
+  )
+  return res.rows[0]?.id ?? null
+}
+
+async function recordSessionEnd(sessionId: string, userId: string): Promise<void> {
   if (!hasDatabase) return
+  // BUG-23 — scope to the calling user so a client-supplied sessionId can only
+  // end the caller's own session row, never an arbitrary one.
   await getPool().query(
-    `UPDATE pi.sessions SET ended_at = NOW() WHERE id = $1 AND ended_at IS NULL`,
-    [sessionId],
+    `UPDATE pi.sessions SET ended_at = NOW() WHERE id = $1 AND user_id = $2 AND ended_at IS NULL`,
+    [sessionId, userId],
   )
 }
 
@@ -82,19 +104,109 @@ function goldenToRef(g: Golden): GoldenRef {
   return { version: g.version, manifestUri: g.manifest_uri }
 }
 
+// DB-25 — how long a 'provisioning' row may sit before the next /start treats
+// it as abandoned (process died mid-provision) and takes it over rather than
+// 409'ing forever. Cold-sprite bootstrap is comfortably under this.
+const STALE_PROVISIONING_MS = 15 * 60 * 1000
+
 /**
- * Auto-provision path (Phase 0.A.2): no `pi.containers` row exists for
- * this (user, provider). Open a transaction, INSERT the row with
- * `http_url = NULL`, then call `ensureContainer` *outside* the row's
- * UPDATE (still inside the txn so a network failure rolls the row
- * back). If `createSprite` succeeds we bootstrap, UPDATE the row with
- * the resolved URL + version, and COMMIT. Any failure → ROLLBACK so
- * the next sign-in retries cleanly with a clean slate.
+ * Reserve a provisioning row in a SHORT, committed transaction — no network
+ * work runs while the pool client is held (DB-25). Returns:
+ *   'reserved'   — we now own provisioning (fresh INSERT, or takeover of a
+ *                  stale abandoned row); proceed to create + bootstrap.
+ *   'concurrent' — another /start is genuinely provisioning right now (a fresh
+ *                  'provisioning' row, or a finalized 'active' row appeared);
+ *                  caller surfaces a transient 409 / retries the existing-row
+ *                  path.
+ */
+async function reserveProvisioningRow(
+  userId: string,
+  providerName: string,
+): Promise<'reserved' | 'concurrent'> {
+  const pool = getPool()
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    // container_name uses the deterministic SpritesProvider naming so it's
+    // stamped before any network call. http_url stays NULL until finalize.
+    const ins = await client.query<{ user_id: string }>(
+      `INSERT INTO pi.containers
+         (user_id, provider, container_name, http_url, status, provisioning_started_at)
+       VALUES ($1, $2, $3, NULL, 'provisioning', NOW())
+       ON CONFLICT (user_id, provider) DO NOTHING
+       RETURNING user_id`,
+      [userId, providerName, deriveSpriteName(userId)],
+    )
+    if (ins.rows.length > 0) {
+      await client.query('COMMIT')
+      return 'reserved'
+    }
+    // A row already exists. Take it over ONLY if it's a stale provisioning row
+    // (an earlier attempt died); an 'active' row or a fresh in-flight
+    // 'provisioning' row is genuinely concurrent.
+    const taken = await client.query<{ user_id: string }>(
+      `UPDATE pi.containers
+       SET provisioning_started_at = NOW(), http_url = NULL
+       WHERE user_id = $1 AND provider = $2 AND status = 'provisioning'
+         AND provisioning_started_at < NOW() - make_interval(secs => $3)
+       RETURNING user_id`,
+      [userId, providerName, STALE_PROVISIONING_MS / 1000],
+    )
+    await client.query('COMMIT')
+    return taken.rows.length > 0 ? 'reserved' : 'concurrent'
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {})
+    throw err
+  } finally {
+    client.release()
+  }
+}
+
+/** Drop our still-provisioning reservation so the next /start retries cleanly.
+ *  Guarded on status='provisioning' so we never delete a row another path
+ *  already finalized to 'active'. */
+async function releaseProvisioningRow(userId: string, providerName: string): Promise<void> {
+  if (!hasDatabase) return
+  await getPool().query(
+    `DELETE FROM pi.containers
+     WHERE user_id = $1 AND provider = $2 AND status = 'provisioning'`,
+    [userId, providerName],
+  )
+}
+
+/** Finalize a reserved row to 'active' with the resolved URL. base_image_version
+ *  is stamped only when a bootstrap actually ran (OPS-24a: null → keep prior),
+ *  and last_updated_at advances only then for the same reason. */
+async function finalizeProvisioningRow(
+  userId: string,
+  providerName: string,
+  url: string,
+  baseImageVersion: string | null,
+): Promise<void> {
+  await getPool().query(
+    `UPDATE pi.containers
+     SET http_url = $3,
+         status = 'active',
+         provisioning_started_at = NULL,
+         base_image_version = COALESCE($4, base_image_version),
+         last_updated_at = CASE WHEN $4 IS NOT NULL THEN NOW() ELSE last_updated_at END,
+         last_seen_at = NOW()
+     WHERE user_id = $1 AND provider = $2`,
+    [userId, providerName, url, baseImageVersion],
+  )
+}
+
+/**
+ * Auto-provision path (Phase 0.A.2): no usable `pi.containers` row exists for
+ * this (user, provider) — either none at all, or a stale 'provisioning' row.
  *
- * Postgres holds the row lock for the duration of the network call,
- * which is fine: it's only relevant if the same user fires two
- * concurrent /start calls, in which case the second blocks on the row
- * lock and then sees the inserted row when the first commits.
+ * DB-25: the slow sprite-create + bootstrap network calls (5-30s on a cold
+ * sprite) no longer run inside a transaction holding a pool connection. Instead:
+ *   1. reserve the row in a SHORT committed txn (status='provisioning');
+ *   2. create the sprite + bootstrap with NO db client held;
+ *   3. finalize the row to 'active' (or drop it on failure so /start retries).
+ * A concurrent /start that loses the reserve race gets a transient 409; an
+ * abandoned 'provisioning' row is taken over after STALE_PROVISIONING_MS.
  */
 async function autoProvisionAndBootstrap(args: {
   userId: string
@@ -115,95 +227,73 @@ async function autoProvisionAndBootstrap(args: {
   // and don't need any of that orchestration. Skip on every other provider.
   const needsBootstrap = args.providerName === 'sprites'
   if (!hasDatabase) {
-    // Dev path with no DB — just create the sprite + bootstrap, no row to rollback.
+    // Dev path with no DB — just create the sprite + bootstrap, no row to track.
     const handle = await args.ensureContainer()
     if (handle.freshlyProvisioned && needsBootstrap) {
       if (!args.golden) {
         throw new Error('cannot bootstrap: no golden published for user channel')
       }
-      await bootstrap(handle.name, { golden: goldenToRef(args.golden) })
+      await bootstrap(handle.name, { golden: goldenToRef(args.golden), userId: args.userId })
     }
     return handle
   }
 
-  const pool = getPool()
-  const client = await pool.connect()
-  try {
-    await client.query('BEGIN')
-
-    // Reserve the row first. container_name uses the deterministic
-    // SpritesProvider naming so we can stamp it before the network call.
-    // http_url stays NULL until ensureContainer returns. We INSERT
-    // ... ON CONFLICT DO NOTHING + RETURNING so a racing call lands
-    // safely on the existing-row path the next time around.
-    const ins = await client.query<{ user_id: string }>(
-      `INSERT INTO pi.containers (user_id, provider, container_name, http_url)
-       VALUES ($1, $2, $3, NULL)
-       ON CONFLICT (user_id, provider) DO NOTHING
-       RETURNING user_id`,
-      [args.userId, args.providerName, deriveSpriteName(args.userId)],
+  // 1. Reserve (short txn, no network, client released immediately).
+  if ((await reserveProvisioningRow(args.userId, args.providerName)) === 'concurrent') {
+    throw new ConcurrentProvisionError(
+      'pi.containers row is being provisioned concurrently; retry as existing-row',
     )
-    if (ins.rows.length === 0) {
-      // A concurrent call inserted the row between our readContainer
-      // check and the INSERT. Roll back our (no-op) txn and tell the
-      // caller to retry the existing-row path.
-      await client.query('ROLLBACK')
-      throw new ConcurrentProvisionError(
-        'pi.containers row was inserted concurrently; retry as existing-row',
-      )
-    }
+  }
 
-    let handle: { name: string; url: string; provider: string; freshlyProvisioned: boolean }
+  // 2. Network work — NO db client held for its duration.
+  let handle: { name: string; url: string; provider: string; freshlyProvisioned: boolean }
+  try {
+    handle = await args.ensureContainer()
+  } catch (err) {
+    // Sprite create failed. Drop the reservation so the next sign-in retries.
+    await releaseProvisioningRow(args.userId, args.providerName)
+    throw err
+  }
+
+  // Bootstrap when the sprite is fresh, OR (BUG-13) it already existed as an
+  // orphan whose harness never came up — probe and re-bootstrap so /start never
+  // hands back a URL with a dead harness.
+  let bootstrapped = false
+  const orphanDown =
+    needsBootstrap && !handle.freshlyProvisioned && !(await harnessHealthy(handle.url))
+  if (needsBootstrap && (handle.freshlyProvisioned || orphanDown)) {
+    if (!args.golden) {
+      // Can't bootstrap without a manifest. Drop the reservation; fatal.
+      await releaseProvisioningRow(args.userId, args.providerName)
+      throw new Error('cannot bootstrap: no golden published for user channel')
+    }
     try {
-      handle = await args.ensureContainer()
+      await bootstrap(
+        handle.name,
+        handle.freshlyProvisioned
+          ? { golden: goldenToRef(args.golden), userId: args.userId }
+          : { golden: goldenToRef(args.golden) },
+      )
+      bootstrapped = true
     } catch (err) {
-      // Sprite create failed. ROLLBACK so the next sign-in retries cleanly.
-      await client.query('ROLLBACK')
+      // The sprite EXISTS now but its harness didn't come up. Finalize the row
+      // to 'active' (visible) so the existing-row self-heal path re-bootstraps
+      // on the next /start; surface the error now.
+      await finalizeProvisioningRow(
+        args.userId,
+        args.providerName,
+        handle.url,
+        args.golden.version,
+      )
       throw err
     }
-
-    if (handle.freshlyProvisioned && needsBootstrap) {
-      if (!args.golden) {
-        await client.query('ROLLBACK')
-        throw new Error('cannot bootstrap: no golden published for user channel')
-      }
-      try {
-        await bootstrap(handle.name, { golden: goldenToRef(args.golden) })
-      } catch (err) {
-        // Bootstrap failed. The Sprite EXISTS now (createSprite returned
-        // ok), so we keep the row visible — the next sign-in will find
-        // an existing row + an existing-but-unhealthy sprite, see
-        // freshlyProvisioned=false, and the operator will need to either
-        // re-bootstrap manually or destroy + retry. To make this self-
-        // healing on the controller path, we COMMIT the row but
-        // surface the error so the user sees a clear failure now.
-        //
-        // Tradeoff: leaving the row visible means the user can't get a
-        // clean retry just by re-clicking. The fix is the
-        // existing-row-revisit path below: when we detect an existing
-        // row and the harness /healthz fails, we re-bootstrap.
-        await client.query(
-          `UPDATE pi.containers
-           SET http_url = $3, base_image_version = $4, last_seen_at = NOW()
-           WHERE user_id = $1 AND provider = $2`,
-          [args.userId, args.providerName, handle.url, args.golden.version],
-        )
-        await client.query('COMMIT')
-        throw err
-      }
-    }
-
-    await client.query(
-      `UPDATE pi.containers
-       SET http_url = $3, base_image_version = $4, last_seen_at = NOW()
-       WHERE user_id = $1 AND provider = $2`,
-      [args.userId, args.providerName, handle.url, args.golden?.version ?? null],
-    )
-    await client.query('COMMIT')
-    return { name: handle.name, url: handle.url, provider: handle.provider }
-  } finally {
-    client.release()
   }
+
+  // 3. Finalize. Stamp base_image_version only when a bootstrap ran (OPS-24a).
+  const stampedVersion =
+    handle.freshlyProvisioned || bootstrapped ? (args.golden?.version ?? null) : null
+  await finalizeProvisioningRow(args.userId, args.providerName, handle.url, stampedVersion)
+  return { name: handle.name, url: handle.url, provider: handle.provider }
 }
 
 /**
@@ -223,6 +313,15 @@ sessionRoutes.post('/start', async (c) => {
   const user = c.get('user')
   const provider = getComputeProvider()
 
+  // Optional: resume a specific past session (the agent-mode thread switcher
+  // sends this). Validated against pi.sessions for ownership below — an
+  // unknown / not-yours id silently falls back to a fresh session.
+  const startBody = (await c.req.json().catch(() => ({}))) as { resumeSessionId?: string }
+  const resumeSessionId =
+    typeof startBody.resumeSessionId === 'string' && startBody.resumeSessionId.length > 0
+      ? startBody.resumeSessionId
+      : null
+
   // Resolve the golden the user *should* be on for their channel. NULL
   // means "no golden published to this channel yet" — operator hasn't
   // promoted anything; for fresh-Sprite users this is fatal because we
@@ -235,7 +334,11 @@ sessionRoutes.post('/start', async (c) => {
 
   let handle: { name: string; url: string; provider: string }
 
-  if (!existing) {
+  // DB-25 — a row stuck in 'provisioning' (http_url still NULL) is not a usable
+  // sprite: it's either an in-flight reserve or an abandoned one. Route it
+  // through the provision path, which reserves/takes-over (stale) or 409s
+  // (fresh concurrent) — never down the existing-row path with a NULL url.
+  if (!existing || existing.status === 'provisioning') {
     // Auto-provision path — Phase 0.A.2.
     try {
       handle = await autoProvisionAndBootstrap({
@@ -260,8 +363,24 @@ sessionRoutes.post('/start', async (c) => {
     // org cleanup, etc.), this recreates it AND returns
     // freshlyProvisioned=true → re-bootstrap. Idempotent.
     const ensured = await provider.ensureContainer(user.id)
-    if (ensured.freshlyProvisioned) {
-      // Sprite was missing; just recreated. Re-bootstrap.
+    // Re-bootstrap when either:
+    //  (a) the Sprite was freshly recreated (deleted out-of-band), or
+    //  (b) the Sprite still exists but its harness isn't answering — the
+    //      common case: the Sprite went `cold` on idle, which kills the
+    //      foreground harness process, and nothing inside the Sprite
+    //      restarts it on warm-up. Without this, a returning user gets the
+    //      URL of a Sprite whose harness is dead and the browser WS upgrade
+    //      hangs forever. The health probe only applies to the Sprites
+    //      provider (Docker containers keep the harness alive via their own
+    //      supervisor). bootstrapSprite is idempotent: it kills any stale
+    //      session, restarts the harness, and verifies /healthz.
+    const harnessDown =
+      provider.name === 'sprites' &&
+      !ensured.freshlyProvisioned &&
+      !(await harnessHealthy(ensured.url))
+    const didBootstrap = ensured.freshlyProvisioned || harnessDown
+    if (didBootstrap) {
+      // Sprite was missing or its harness is dead. (Re-)bootstrap.
       if (!golden) {
         return c.json(
           {
@@ -272,23 +391,32 @@ sessionRoutes.post('/start', async (c) => {
         )
       }
       try {
-        await bootstrapSprite(ensured.name, { golden: goldenToRef(golden) })
+        await bootstrapSprite(ensured.name, { golden: goldenToRef(golden), userId: user.id })
       } catch (err) {
         console.error(`[session] re-bootstrap failed for ${ensured.name}:`, err)
         return c.json({ error: (err as Error).message, sprite: ensured.name }, 500)
       }
     }
+    // OPS-24a — only stamp base_image_version when a bootstrap ACTUALLY ran.
+    // On the warm-healthy path no golden was applied, so writing the latest
+    // version would lie: the sprite keeps running whatever golden it had
+    // (apply-golden doesn't restart a running harness — the warm-pkill gap),
+    // making fleet rollouts unverifiable and bad goldens untriageable by
+    // cohort. Pass null → upsertContainer COALESCEs to keep the recorded value.
     await upsertContainer(
       user.id,
       ensured.provider,
       ensured.name,
       ensured.url,
-      golden?.version ?? null,
+      didBootstrap ? (golden?.version ?? null) : null,
     )
     handle = { name: ensured.name, url: ensured.url, provider: ensured.provider }
   }
 
-  const sessionId = await recordSessionStart(user.id, handle.name)
+  // Resume the requested session if it's the user's; otherwise mint a new one.
+  const sessionId =
+    (resumeSessionId && (await resumeSessionIfOwned(resumeSessionId, user.id))) ||
+    (await recordSessionStart(user.id, handle.name))
   const token = signSessionToken({ userId: user.id, sessionId })
 
   return c.json({
@@ -320,7 +448,7 @@ sessionRoutes.post('/stop', async (c) => {
       console.warn('[session] freeze failed', e),
     )
   }
-  if (body.sessionId) await recordSessionEnd(body.sessionId)
+  if (body.sessionId) await recordSessionEnd(body.sessionId, user.id)
   return c.json({ ok: true })
 })
 

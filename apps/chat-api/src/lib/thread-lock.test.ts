@@ -9,7 +9,7 @@
  */
 import { describe, expect, it } from 'bun:test'
 import type { Pool } from 'pg'
-import { resolveThreadLock } from './thread-lock'
+import { resolveThreadLock, ThreadOwnershipError } from './thread-lock'
 
 interface MockRow {
   provider: string | null
@@ -36,12 +36,15 @@ function makeFakePool(initialRow: MockRow | null): Pool & FakePoolHistory {
       const isInsert = /^\s*INSERT/i.test(sql)
       const isUpdate = /^\s*UPDATE/i.test(sql)
       if (isInsert) {
-        // Mirror the chat-api migration's `ON CONFLICT (id) DO UPDATE`
-        // semantics — first INSERT wins, subsequent INSERT-with-conflict
-        // would coalesce, but our resolver always SELECTs first so we
-        // only hit the INSERT branch when the row doesn't exist yet.
+        // Mirror the chat-api migration's `ON CONFLICT (id) DO UPDATE ...
+        // WHERE user_id = EXCLUDED.user_id RETURNING id` semantics — first
+        // INSERT wins, subsequent INSERT-with-conflict coalesces, but our
+        // resolver always SELECTs first so we only hit the INSERT branch when
+        // the row isn't visible to this user. The RETURNING id row signals
+        // the insert/update affected a row owned by the caller.
         const [, , title, provider, model] = params as [string, string, string, string, string]
         row = { provider, model, title }
+        return { rows: [{ id: 't1' }], rowCount: 1 }
       } else if (isUpdate) {
         // Two shapes: the lock-update (`SET provider=$1, model=$2`) and the
         // touch-only (`SET updated_at=NOW()`). Distinguish by SQL.
@@ -136,6 +139,33 @@ describe('resolveThreadLock', () => {
     // No lock-update SQL was issued — the locked values are preserved.
     const lockUpdates = pool.queries.filter((q) => /SET provider/i.test(q.sql))
     expect(lockUpdates).toHaveLength(0)
+  })
+
+  it('BUG-12: foreign-owned thread id is rejected (no cross-tenant write)', async () => {
+    // The user-scoped SELECT returns 0 rows (the thread is invisible to this
+    // user), but the thread id already exists in the table under a different
+    // owner — so the `ON CONFLICT ... WHERE user_id = EXCLUDED.user_id`
+    // upsert affects 0 rows and RETURNING id is empty. The resolver must
+    // throw rather than silently mutate the victim's row.
+    const queries: Array<{ sql: string }> = []
+    const fake = {
+      query: async (sql: string) => {
+        queries.push({ sql })
+        if (/^\s*SELECT/i.test(sql)) return { rows: [], rowCount: 0 }
+        if (/^\s*INSERT/i.test(sql)) return { rows: [], rowCount: 0 } // conflict, foreign owner
+        return { rows: [], rowCount: 0 }
+      },
+    } as unknown as Pool
+
+    await expect(
+      resolveThreadLock({
+        ...baseArgs,
+        requestedProvider: 'anthropic',
+        requestedModel: 'claude-opus-4-7',
+        override: false,
+        pool: fake,
+      }),
+    ).rejects.toBeInstanceOf(ThreadOwnershipError)
   })
 
   it('mid-thread switch with override:true re-locks to the new pair', async () => {
