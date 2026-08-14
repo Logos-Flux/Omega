@@ -17,12 +17,12 @@
 // in CLAUDE.md / .env.example. Switch to a dedicated secret if state-sig
 // reuse ever becomes a concern.
 
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
+import type { ContentfulStatusCode } from 'hono/utils/http-status'
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import { getPool, hasDatabase } from '../lib/db'
 import { encryptToken, decryptToken } from '../lib/crypto'
 import { requireSession } from '../middleware/session'
-import { serviceBearer } from '../middleware/service-bearer'
 
 // ---------- Constants ----------
 
@@ -30,14 +30,27 @@ const GOOGLE_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth'
 const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token'
 
 const SCOPES = [
-  'https://www.googleapis.com/auth/drive.readonly',
+  // Full Drive (read + write) so the gdcli connector can create/upload/edit
+  // files, not just read. The same token powers the RAG crawl (read) and the
+  // connectors (write). Widened from drive.readonly 2026-06-08 — existing users
+  // must re-consent to pick up the write scope (include_granted_scopes adds it
+  // incrementally).
+  'https://www.googleapis.com/auth/drive',
   'https://www.googleapis.com/auth/calendar',
   'https://www.googleapis.com/auth/gmail.modify',
   'openid',
   'email',
 ]
 
-const STATE_TTL_SEC = 5 * 60
+// 30 min. The consent flow for our RESTRICTED scopes (full Drive + Gmail
+// modify) is multi-screen — account picker, "unverified app" interstitial,
+// then a separate full-access checkbox per scope. A user who actually reads
+// those "see, edit, and permanently delete" warnings can easily spend several
+// minutes; a 5 min TTL was expiring the state mid-consent and dumping them on
+// the callback's "invalid state" error (intermittent — only the slow readers
+// hit it, fast clickers and retries came in under the wire). 30 min is still a
+// short-lived signed token but comfortably outlasts a deliberate consent read.
+const STATE_TTL_SEC = 30 * 60
 
 // Read the public-host allowlist from env at call time so tests / operators
 // can change it without re-importing this module. See .env.example for the
@@ -174,6 +187,72 @@ export function verifyState(state: string): StatePayload {
   return payload
 }
 
+// SEC-01 — per-sprite mint token.
+//
+// The Google-token mint endpoint (`POST /google/access-token`) has two
+// callers with very different trust:
+//   • rag-api's background crawl, which legitimately mints for ARBITRARY
+//     users (no per-user session) — it holds CONTROLLER_SERVICE_TOKEN.
+//   • each user's pi-harness, which must only ever mint ITS OWN user's
+//     token.
+//
+// The harness lives in a per-user Sprite whose entire env is readable via
+// `/proc` by the agent's `shell` tool (the SEC-01 attack). So any secret we
+// give the Sprite to authenticate the mint is exfiltratable. The fix: the
+// controller signs a per-USER mint token with CONTROLLER_MINT_SIGNING_KEY —
+// a key that NEVER enters a Sprite — and injects it at provision time. The
+// token encodes exactly one `userId`; presenting it mints only that user.
+// Exfiltrating it from Sprite A therefore yields nothing beyond user A's own
+// token (which the operator of Sprite A already has), and leaking
+// HARNESS_JWT_SECRET (which IS in the Sprite) does NOT help — it is the wrong
+// signer. This closes the cross-user mint without uid isolation (SEC-02).
+//
+// The signing key is read at call time (mirrors getStateSecret) so operator
+// rotation takes effect without a re-import.
+interface MintTokenClaims {
+  userId: string
+  exp: number
+}
+
+function getMintSigningKey(): string {
+  const s = process.env.CONTROLLER_MINT_SIGNING_KEY
+  if (!s) throw new Error('CONTROLLER_MINT_SIGNING_KEY not set (required to sign per-sprite mint tokens)')
+  return s
+}
+
+// Mint a per-user token for injection into a Sprite at provision time.
+// `ttlSec` defaults to 90 days: the token only authorizes minting its own
+// user's Google token, and every `/api/session/start` re-bootstrap refreshes
+// it, so a generous lifetime avoids a warm-but-stale-token failure mode.
+export function signMintToken(args: { userId: string; ttlSec?: number }): string {
+  const ttl = args.ttlSec ?? 90 * 24 * 60 * 60
+  const now = Math.floor(Date.now() / 1000)
+  const header = b64urlEncodeStr(JSON.stringify({ alg: 'HS256', typ: 'JWT' }))
+  const payload = b64urlEncodeStr(JSON.stringify({ userId: args.userId, exp: now + ttl }))
+  const signing = `${header}.${payload}`
+  return `${signing}.${hmac(signing, getMintSigningKey()).toString('base64url')}`
+}
+
+// Verify a per-sprite mint token. Throws on any malformation/mismatch/expiry.
+function verifyMintToken(token: string): MintTokenClaims {
+  const parts = token.split('.')
+  if (parts.length !== 3) throw new Error('malformed mint token')
+  const [headerB64, payloadB64, sigB64] = parts as [string, string, string]
+  const expected = hmac(`${headerB64}.${payloadB64}`, getMintSigningKey())
+  const provided = Buffer.from(sigB64, 'base64url')
+  if (expected.length !== provided.length || !timingSafeEqual(expected, provided)) {
+    throw new Error('mint token signature invalid')
+  }
+  const claims = JSON.parse(
+    Buffer.from(payloadB64, 'base64url').toString('utf8'),
+  ) as MintTokenClaims
+  if (typeof claims.userId !== 'string' || typeof claims.exp !== 'number') {
+    throw new Error('mint token missing required fields')
+  }
+  if (claims.exp * 1000 < Date.now()) throw new Error('mint token expired')
+  return claims
+}
+
 // ---------- Google OAuth client config ----------
 
 function googleClientConfig(): { clientId: string; clientSecret: string; redirectUri: string } {
@@ -243,6 +322,75 @@ async function upsertTokenRow(args: {
   )
 }
 
+// ---------- Callback error page ----------
+
+// The /callback runs in the user's BROWSER (Google 302s them here), so a bare
+// `c.json({error}, 4xx)` renders a raw JSON blob with no way forward — the
+// "it dumps you to an error" report. Render a small self-contained HTML page
+// instead: a plain-language explanation plus a one-click "Try again" that
+// re-enters the connect flow, so a transient failure (expired state, a denied
+// click, Google withholding a refresh token) self-recovers without support.
+//
+// retryUrl: prefer a validated returnTo (the app page the user came from —
+// re-landing there re-triggers the reconnect modal). When we can't trust the
+// state (e.g. it failed to verify) fall back to OAUTH_RETRY_URL, then to the
+// first allowed return host. If none resolves we omit the button and tell the
+// user to return to the app manually.
+function resolveRetryUrl(validatedReturnTo?: string | null): string | null {
+  if (validatedReturnTo) return validatedReturnTo
+  const explicit = process.env.OAUTH_RETRY_URL?.trim()
+  if (explicit) return explicit
+  const host = getAllowedReturnHosts()[0]
+  return host ? `https://${host}/` : null
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(
+    /[&<>"']/g,
+    (ch) =>
+      (
+        ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }) as Record<
+          string,
+          string
+        >
+      )[ch] ?? ch,
+  )
+}
+
+function oauthErrorPage(
+  c: Context,
+  opts: { status: ContentfulStatusCode; heading: string; detail: string; retryUrl: string | null },
+): Response {
+  const { status, heading, detail, retryUrl } = opts
+  const button = retryUrl
+    ? `<a class="btn" href="${escapeHtml(retryUrl)}">Try again</a>`
+    : `<p class="muted">Return to the app and start the Google connection again.</p>`
+  const html = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Couldn't connect Google</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 15px/1.5 system-ui, -apple-system, sans-serif; margin: 0;
+         display: grid; place-items: center; min-height: 100vh; padding: 24px;
+         background: Canvas; color: CanvasText; }
+  .card { max-width: 30rem; text-align: center; }
+  h1 { font-size: 1.25rem; margin: 0 0 .5rem; }
+  p { margin: .5rem 0; }
+  .muted { opacity: .7; font-size: .9rem; }
+  .btn { display: inline-block; margin-top: 1rem; padding: .6rem 1.25rem;
+         border-radius: 8px; background: #2563eb; color: #fff;
+         text-decoration: none; font-weight: 600; }
+  .btn:hover { background: #1d4ed8; }
+</style></head>
+<body><div class="card">
+  <h1>${escapeHtml(heading)}</h1>
+  <p>${escapeHtml(detail)}</p>
+  ${button}
+</div></body></html>`
+  return c.html(html, status)
+}
+
 // ---------- Routes ----------
 
 export const oauthRoutes = new Hono()
@@ -281,18 +429,47 @@ oauthRoutes.get('/google/callback', async (c) => {
   const state = c.req.query('state')
   const errParam = c.req.query('error')
   if (errParam) {
-    return c.json({ error: `google denied: ${errParam}` }, 400)
+    // Google bounced the user back with ?error= BEFORE we got a code — they
+    // cancelled, or (the case we keep hitting) the consent was blocked because
+    // our restricted scopes need an allowed/verified account. Log it: this is
+    // the branch that previously returned silently, so the actual Google reason
+    // never reached the logs. `access_denied` / `org_internal` are the common
+    // values; capture whatever Google sent verbatim.
+    console.warn(`[oauth] google callback denied: error=${errParam}`)
+    const denied = errParam === 'access_denied'
+    return oauthErrorPage(c, {
+      status: 400,
+      heading: denied ? 'Google connection cancelled' : "Google couldn't complete the connection",
+      detail: denied
+        ? 'The connection was cancelled or your account is not permitted to grant these permissions. Make sure you are signed in with the correct account, then try again.'
+        : `Google returned an error (${errParam}). Please try again.`,
+      retryUrl: resolveRetryUrl(),
+    })
   }
   if (!code || !state) {
-    return c.json({ error: 'missing code or state' }, 400)
+    console.warn('[oauth] callback missing code or state')
+    return oauthErrorPage(c, {
+      status: 400,
+      heading: "Google couldn't complete the connection",
+      detail: 'The response from Google was incomplete. Please try connecting again.',
+      retryUrl: resolveRetryUrl(),
+    })
   }
 
   let payload: StatePayload
   try {
     payload = verifyState(state)
   } catch (err) {
+    // Most often the state simply expired mid-consent (see STATE_TTL_SEC). Tell
+    // the user that in plain language rather than the cryptic "invalid state".
     console.warn('[oauth] state verify failed:', (err as Error).message)
-    return c.json({ error: 'invalid state' }, 400)
+    return oauthErrorPage(c, {
+      status: 400,
+      heading: 'Your connection link expired',
+      detail:
+        'The Google connection took too long to complete, so the secure link timed out. Please start the connection again — it only takes a moment.',
+      retryUrl: resolveRetryUrl(),
+    })
   }
 
   let cfg
@@ -300,7 +477,12 @@ oauthRoutes.get('/google/callback', async (c) => {
     cfg = googleClientConfig()
   } catch (err) {
     console.error('[oauth] google client misconfigured:', (err as Error).message)
-    return c.json({ error: 'oauth not configured on this server' }, 500)
+    return oauthErrorPage(c, {
+      status: 500,
+      heading: 'Google sign-in is misconfigured',
+      detail: 'This is on our end, not yours. Please let the team know if it persists.',
+      retryUrl: resolveRetryUrl(payload.returnTo),
+    })
   }
 
   // Exchange code for tokens.
@@ -319,13 +501,23 @@ oauthRoutes.get('/google/callback', async (c) => {
     })
   } catch (err) {
     console.error('[oauth] google token fetch threw:', err)
-    return c.json({ error: 'google token exchange failed' }, 502)
+    return oauthErrorPage(c, {
+      status: 502,
+      heading: "Couldn't reach Google",
+      detail: 'We had trouble talking to Google. Please try again in a moment.',
+      retryUrl: resolveRetryUrl(payload.returnTo),
+    })
   }
 
   if (!tokenRes.ok) {
     const body = await tokenRes.text().catch(() => '')
     console.error(`[oauth] google token exchange ${tokenRes.status}: ${body}`)
-    return c.json({ error: `google token exchange failed: ${tokenRes.status}` }, 502)
+    return oauthErrorPage(c, {
+      status: 502,
+      heading: "Google couldn't complete the connection",
+      detail: 'Google rejected the sign-in. Please try connecting again.',
+      retryUrl: resolveRetryUrl(payload.returnTo),
+    })
   }
 
   const tokenBody = (await tokenRes.json().catch(() => null)) as {
@@ -337,26 +529,32 @@ oauthRoutes.get('/google/callback', async (c) => {
   } | null
 
   if (!tokenBody) {
-    return c.json({ error: 'google token response was not JSON' }, 502)
+    console.error('[oauth] google token response was not JSON')
+    return oauthErrorPage(c, {
+      status: 502,
+      heading: "Google couldn't complete the connection",
+      detail: 'We got an unexpected response from Google. Please try again.',
+      retryUrl: resolveRetryUrl(payload.returnTo),
+    })
   }
 
   if (!tokenBody.refresh_token) {
     // We forced prompt=consent, so this should be impossible. If it happens
     // it's almost always because the user previously consented and Google
     // is suppressing the new refresh token despite our prompt — known
-    // footgun. Surface a clear error rather than upserting an empty row.
+    // footgun. Surface a clear, actionable error rather than upserting an
+    // empty row.
     console.error(
       `[oauth] google response had no refresh_token for user ${payload.userId}; ` +
         `scopes=${tokenBody.scope ?? '<none>'}`,
     )
-    return c.json(
-      {
-        error:
-          'google did not return a refresh_token. ' +
-          'Visit https://myaccount.google.com/permissions, remove access for the Omega app, and try again.',
-      },
-      500,
-    )
+    return oauthErrorPage(c, {
+      status: 500,
+      heading: 'Google needs you to reconnect',
+      detail:
+        "Google didn't return the credential we need. Open myaccount.google.com/permissions, remove access for the app, then click Try again.",
+      retryUrl: resolveRetryUrl(payload.returnTo),
+    })
   }
 
   const scopes = (tokenBody.scope ?? '').split(/\s+/).filter((s) => s.length > 0)
@@ -366,7 +564,12 @@ oauthRoutes.get('/google/callback', async (c) => {
     ciphertext = encryptToken(tokenBody.refresh_token)
   } catch (err) {
     console.error('[oauth] encryptToken failed:', err)
-    return c.json({ error: 'token encryption failed' }, 500)
+    return oauthErrorPage(c, {
+      status: 500,
+      heading: 'Something went wrong on our end',
+      detail: 'We connected to Google but failed to store the credential. Please try again.',
+      retryUrl: resolveRetryUrl(payload.returnTo),
+    })
   }
 
   try {
@@ -378,7 +581,12 @@ oauthRoutes.get('/google/callback', async (c) => {
     })
   } catch (err) {
     console.error('[oauth] upsert pi.oauth_tokens failed:', err)
-    return c.json({ error: 'failed to persist tokens' }, 500)
+    return oauthErrorPage(c, {
+      status: 500,
+      heading: 'Something went wrong on our end',
+      detail: 'We connected to Google but failed to save it. Please try again.',
+      retryUrl: resolveRetryUrl(payload.returnTo),
+    })
   }
 
   return c.redirect(payload.returnTo, 302)
@@ -639,9 +847,10 @@ export async function exchangeRefreshToken(args: {
 // Google says the grant is revoked. Cache-Control: no-store — body contains
 // a short-lived secret and per ROADMAP 0.B.3 we explicitly do not cache
 // server-side.
+// Auth is enforced inside the handler (not via the serviceBearer middleware)
+// because the two callers authenticate differently — see the SEC-01 block.
 oauthRoutes.post(
   '/google/access-token',
-  serviceBearer({ tokenEnv: 'CONTROLLER_SERVICE_TOKEN' }),
   async (c) => {
     let body: unknown
     try {
@@ -655,6 +864,57 @@ oauthRoutes.post(
     const userId = (body as { userId?: unknown }).userId
     if (typeof userId !== 'string' || !UUID_RE.test(userId)) {
       return c.json({ error: 'invalid_user_id', message: 'userId must be a UUID' }, 400)
+    }
+
+    // SEC-01 — dual-mode auth, by caller trust:
+    //
+    //  (a) Per-sprite mint token (`x-mint-token`): a controller-signed token
+    //      that encodes exactly one userId. The pi-harness presents this. The
+    //      mint is SCOPED — the requested `userId` MUST equal the token's
+    //      userId (403 otherwise). Because the signing key never enters a
+    //      Sprite, a prompt-injected agent that exfiltrates the Sprite env
+    //      (the SEC-01 attack) can mint only its own user's token.
+    //
+    //  (b) Service bearer (`Authorization: Bearer <CONTROLLER_SERVICE_TOKEN>`):
+    //      the arbitrary-userId path, for rag-api's background crawl, which
+    //      has no per-user session. This token is NEVER injected into a Sprite
+    //      (removed from bootstrap.ts), so it isn't reachable from the agent.
+    //
+    // A request must satisfy exactly one path. The mint token takes
+    // precedence when present; otherwise we fall through to the service
+    // bearer.
+    const mintToken = c.req.header('x-mint-token')
+    if (mintToken) {
+      let claims: MintTokenClaims
+      try {
+        claims = verifyMintToken(mintToken)
+      } catch {
+        return c.json(
+          { error: 'invalid_mint_token', message: 'x-mint-token is not a valid mint token' },
+          401,
+        )
+      }
+      if (claims.userId !== userId) {
+        return c.json(
+          { error: 'user_id_mismatch', message: 'mint token userId does not match requested userId' },
+          403,
+        )
+      }
+    } else {
+      // Service-bearer path (rag-api). Constant-time compare; fail closed when
+      // the token is unset (503, mirroring the serviceBearer middleware).
+      const expected = process.env.CONTROLLER_SERVICE_TOKEN ?? ''
+      if (!expected) {
+        return c.json({ error: 'service endpoint disabled' }, 503)
+      }
+      const auth = c.req.header('authorization')
+      const m = auth && /^Bearer\s+(.+)$/i.exec(auth)
+      const provided = m ? m[1]! : ''
+      const pb = Buffer.from(provided, 'utf8')
+      const eb = Buffer.from(expected, 'utf8')
+      if (pb.length !== eb.length || !timingSafeEqual(pb, eb)) {
+        return c.json({ error: 'unauthenticated' }, 401)
+      }
     }
 
     const ct = await readRefreshTokenCt(userId, 'google').catch((err) => {

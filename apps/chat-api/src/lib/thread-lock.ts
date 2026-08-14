@@ -27,6 +27,18 @@ import { getPool, hasDatabase } from './db'
  * The `title` is set to the first user message on first turn only; after
  * that the column is left untouched so a user-renamed thread stays renamed.
  */
+/**
+ * Thrown when a turn references a thread id that exists but is owned by a
+ * different user (BUG-12). The caller must treat this as a 404 and MUST NOT
+ * persist any messages against the thread.
+ */
+export class ThreadOwnershipError extends Error {
+  constructor() {
+    super('thread is owned by a different user')
+    this.name = 'ThreadOwnershipError'
+  }
+}
+
 export interface LockResolution {
   /** Provider/model the caller should ACTUALLY use for this turn. */
   provider: string
@@ -71,15 +83,24 @@ export async function resolveThreadLock(args: ResolveThreadLockArgs): Promise<Lo
   // First turn of this thread — create it AND lock to the requested pair.
   if (existing.rows.length === 0) {
     const title = firstUserMessage ? firstUserMessage.slice(0, 80) : 'New chat'
-    await pool.query(
+    // BUG-12 — the user-scoped SELECT above returned no row, which means EITHER
+    // the thread is brand new OR it exists under a *different* user. The
+    // `WHERE chat.threads.user_id = EXCLUDED.user_id` guard makes the
+    // DO UPDATE a no-op for a foreign-owned row, so a client-supplied thread
+    // id can no longer mutate (reorder / lock provider on) another user's
+    // thread. `RETURNING id` then yields 0 rows in exactly that case → reject.
+    const ins = await pool.query<{ id: string }>(
       `INSERT INTO chat.threads (id, user_id, title, provider, model)
        VALUES ($1, $2, $3, $4, $5)
        ON CONFLICT (id) DO UPDATE SET
          updated_at = NOW(),
          provider = COALESCE(chat.threads.provider, EXCLUDED.provider),
-         model = COALESCE(chat.threads.model, EXCLUDED.model)`,
+         model = COALESCE(chat.threads.model, EXCLUDED.model)
+       WHERE chat.threads.user_id = EXCLUDED.user_id
+       RETURNING id`,
       [threadId, userId, title, requestedProvider, requestedModel],
     )
+    if (ins.rows.length === 0) throw new ThreadOwnershipError()
     return { provider: requestedProvider, model: requestedModel, mismatched: false }
   }
 

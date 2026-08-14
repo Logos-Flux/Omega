@@ -41,8 +41,16 @@ const mockClient = {
   }),
 }
 
+// `poolCalls` records non-transactional getPool().query(...) calls so tests can
+// verify the DB-25 short-txn shape: reserve/finalize/release run as plain pool
+// queries (finalize UPDATE … status='active', release DELETE … 'provisioning'),
+// NOT inside the long-held client transaction.
+let poolCalls: Array<{ sql: string; params: unknown[] }> = []
 const mockPool = {
-  query: mock(async (sql: string, params?: unknown[]) => mockPoolQueryImpl(sql, params)),
+  query: mock(async (sql: string, params?: unknown[]) => {
+    poolCalls.push({ sql, params: params ?? [] })
+    return mockPoolQueryImpl(sql, params)
+  }),
   connect: mock(async () => mockClient),
 }
 
@@ -129,6 +137,15 @@ mock.module('../lib/golden', () => ({
   latestGoldenForChannel: async () => mockLatestGolden,
 }))
 
+// Harness health probe: the existing-row path calls harnessHealthy(url) to
+// decide whether a sprite's harness needs restarting. Default to healthy so
+// the steady-state fast path doesn't re-bootstrap; tests flip it to false to
+// exercise the cold-sprite self-heal.
+let mockHarnessHealthy = true
+mock.module('../lib/harness-health', () => ({
+  harnessHealthy: async () => mockHarnessHealthy,
+}))
+
 // Now safe to import the routes module.
 const { sessionRoutes } = await import('./session')
 
@@ -138,7 +155,9 @@ beforeEach(() => {
   // Reset mocks between tests.
   bootstrapCalls = []
   bootstrapShouldThrow = null
+  mockHarnessHealthy = true
   clientCalls = []
+  poolCalls = []
   clientReleased = false
   mockPool.query.mockClear()
   mockPool.connect.mockClear()
@@ -247,6 +266,39 @@ describe('POST /api/session/start', () => {
     expect(body.token.split('.').length).toBe(3) // JWT shape
   })
 
+  test('existing row + sprite exists but harness is down (cold) → re-bootstrap fires, then 200', async () => {
+    mockExistingContainer({
+      user_id: USER_ID,
+      provider: 'sprites',
+      container_name: SPRITE_NAME,
+      http_url: `https://${SPRITE_NAME}.sprites.app`,
+      base_image_version: '1.1.0',
+      status: 'active',
+      created_at: '2026-04-01T00:00:00Z',
+      last_seen_at: '2026-04-30T00:00:00Z',
+      last_updated_at: null,
+    })
+    mockEnsureContainer = async () => ({
+      name: SPRITE_NAME,
+      url: `https://${SPRITE_NAME}.sprites.app`,
+      provider: 'sprites',
+      freshlyProvisioned: false, // sprite still exists…
+    })
+    mockHarnessHealthy = false // …but its harness died on idle/cold
+
+    const app = makeApp()
+    const res = await app.request('/api/session/start', { method: 'POST' })
+
+    expect(res.status).toBe(200)
+    // The self-heal: harness unhealthy on an existing sprite re-bootstraps.
+    expect(bootstrapCalls.length).toBe(1)
+    expect(bootstrapCalls[0]!.spriteName).toBe(SPRITE_NAME)
+    const body = (await res.json()) as { token: string }
+    expect(body.token.split('.').length).toBe(3)
+    // Existing-row path: no transaction opened.
+    expect(mockPool.connect).not.toHaveBeenCalled()
+  })
+
   test('new user, happy path → row inserted, sprite created, bootstrap called, JWT minted', async () => {
     // No existing row.
     mockExistingContainer(null)
@@ -272,22 +324,30 @@ describe('POST /api/session/start', () => {
     expect(bootstrapCalls[0]!.spriteName).toBe(SPRITE_NAME)
     expect(bootstrapCalls[0]!.goldenVersion).toBe('1.1.0')
 
-    // Transaction shape: BEGIN → INSERT (with RETURNING) → UPDATE → COMMIT.
+    // DB-25 — the reservation is a SHORT committed txn on the client:
+    // BEGIN → INSERT (RETURNING) → COMMIT, then the client is released BEFORE
+    // any network work. No UPDATE and no ROLLBACK inside the txn.
     const sqls = clientCalls.map((c) => c.sql)
     expect(sqls.some((s) => /^\s*BEGIN/i.test(s))).toBe(true)
     expect(sqls.some((s) => /INSERT INTO pi\.containers/i.test(s))).toBe(true)
-    expect(sqls.some((s) => /UPDATE pi\.containers/i.test(s))).toBe(true)
     expect(sqls.some((s) => /^\s*COMMIT/i.test(s))).toBe(true)
     expect(sqls.some((s) => /^\s*ROLLBACK/i.test(s))).toBe(false)
+    expect(sqls.some((s) => /UPDATE pi\.containers/i.test(s))).toBe(false)
     expect(clientReleased).toBe(true)
+    // Finalize happens as a plain pool query, OUTSIDE the txn, flipping the row
+    // to 'active' once the (clientless) bootstrap completed.
+    const poolSqls = poolCalls.map((c) => c.sql)
+    expect(
+      poolSqls.some((s) => /UPDATE pi\.containers/i.test(s) && /status = 'active'/i.test(s)),
+    ).toBe(true)
   })
 
-  test('new user, sprite create fails → row not visible after the failed call (transaction rolled back)', async () => {
+  test('new user, sprite create fails → reservation released, no usable row left behind', async () => {
     mockExistingContainer(null)
     mockEnsureContainer = async () => {
       throw new Error('sprites api 503')
     }
-    // INSERT … RETURNING returns one row; we insert before the network call.
+    // INSERT … RETURNING returns one row; we reserve before the network call.
     mockClientQueryImpl = async (sql: string) => {
       if (/INSERT INTO pi\.containers/i.test(sql) && /RETURNING/i.test(sql)) {
         return { rows: [{ user_id: USER_ID }], rowCount: 1 }
@@ -300,12 +360,18 @@ describe('POST /api/session/start', () => {
 
     expect(res.status).toBe(500)
     expect(bootstrapCalls.length).toBe(0)
-    // Transaction was rolled back, not committed.
+    // DB-25 — the reservation committed (short txn), then sprite-create failed,
+    // so we DELETE the still-'provisioning' row via a plain pool query rather
+    // than rolling back a long-held transaction. The reserve txn itself never
+    // rolls back on this path.
     const sqls = clientCalls.map((c) => c.sql)
     expect(sqls.some((s) => /^\s*BEGIN/i.test(s))).toBe(true)
-    expect(sqls.some((s) => /^\s*ROLLBACK/i.test(s))).toBe(true)
-    expect(sqls.some((s) => /^\s*COMMIT/i.test(s))).toBe(false)
+    expect(sqls.some((s) => /^\s*COMMIT/i.test(s))).toBe(true)
     expect(clientReleased).toBe(true)
+    const poolSqls = poolCalls.map((c) => c.sql)
+    expect(
+      poolSqls.some((s) => /DELETE FROM pi\.containers/i.test(s) && /'provisioning'/i.test(s)),
+    ).toBe(true)
   })
 
   test('new user, bootstrap fails → row visible (sprite was created), error surfaced', async () => {
@@ -329,15 +395,19 @@ describe('POST /api/session/start', () => {
 
     expect(res.status).toBe(500)
     expect(bootstrapCalls.length).toBe(1)
-    // Bootstrap failed — but the Sprite EXISTS now, so we COMMIT the
-    // row (with http_url + base_image_version stamped) so the next
-    // sign-in finds existing row + ensureContainer → freshlyProvisioned=
-    // false, and the operator can re-bootstrap manually. This is the
-    // documented tradeoff; see session.ts auto-provision comment.
+    // Bootstrap failed — but the Sprite EXISTS now, so we FINALIZE the row to
+    // 'active' (http_url + base_image_version stamped) so the next sign-in
+    // finds an existing row + ensureContainer → freshlyProvisioned=false and the
+    // existing-row path re-bootstraps. DB-25: the reserve txn still commits
+    // cleanly (no rollback); finalize is a plain pool UPDATE.
     const sqls = clientCalls.map((c) => c.sql)
     expect(sqls.some((s) => /^\s*COMMIT/i.test(s))).toBe(true)
     expect(sqls.some((s) => /^\s*ROLLBACK/i.test(s))).toBe(false)
     expect(clientReleased).toBe(true)
+    const poolSqls = poolCalls.map((c) => c.sql)
+    expect(
+      poolSqls.some((s) => /UPDATE pi\.containers/i.test(s) && /status = 'active'/i.test(s)),
+    ).toBe(true)
   })
 
   test('new user, bootstrap fails → next call detects row exists and re-runs bootstrap (idempotent)', async () => {
@@ -363,13 +433,12 @@ describe('POST /api/session/start', () => {
     expect(bootstrapCalls.length).toBe(1)
 
     // Second call: row now exists (the failed-bootstrap call committed
-    // it). But the sprite ALSO exists, so ensureContainer returns
-    // freshlyProvisioned=false. The re-bootstrap branch only fires if
-    // ensureContainer reports freshlyProvisioned=true on the existing-
-    // row path. So in steady state, bootstrap is NOT re-run. This is
-    // the documented limitation: re-bootstrap requires the operator to
-    // either destroy the sprite (so ensureContainer recreates it) or
-    // run scripts/provision-user.ts.
+    // it). The sprite ALSO exists, so ensureContainer returns
+    // freshlyProvisioned=false. Here the harness probe reports HEALTHY
+    // (mockHarnessHealthy stays true), so the self-heal does not fire and
+    // bootstrap is NOT re-run — this is the genuine steady-state fast path.
+    // (The cold-sprite case where the probe reports unhealthy → re-bootstrap
+    // is covered by its own test above.)
     bootstrapShouldThrow = null
     mockExistingContainer({
       user_id: USER_ID,
@@ -446,9 +515,12 @@ describe('POST /api/session/start', () => {
     const body = (await res.json()) as { error: string }
     expect(body.error).toMatch(/no golden published/i)
     expect(bootstrapCalls.length).toBe(0)
-    // Rolled back since we couldn't bootstrap.
-    const sqls = clientCalls.map((c) => c.sql)
-    expect(sqls.some((s) => /^\s*ROLLBACK/i.test(s))).toBe(true)
+    // DB-25 — couldn't bootstrap (no manifest), so the reservation is released
+    // via a pool DELETE of the still-'provisioning' row, not a txn rollback.
+    const poolSqls = poolCalls.map((c) => c.sql)
+    expect(
+      poolSqls.some((s) => /DELETE FROM pi\.containers/i.test(s) && /'provisioning'/i.test(s)),
+    ).toBe(true)
   })
 
   test('concurrent provision (INSERT … ON CONFLICT DO NOTHING returns no rows) → 409', async () => {
@@ -460,6 +532,57 @@ describe('POST /api/session/start', () => {
     mockClientQueryImpl = async (sql: string) => {
       if (/INSERT INTO pi\.containers/i.test(sql) && /RETURNING/i.test(sql)) {
         // Concurrent insert: no row returned.
+        return { rows: [], rowCount: 0 }
+      }
+      return { rows: [], rowCount: 1 }
+    }
+
+    const app = makeApp()
+    const res = await app.request('/api/session/start', { method: 'POST' })
+    expect(res.status).toBe(409)
+    expect(bootstrapCalls.length).toBe(0)
+  })
+
+  test('DB-25 — existing STALE provisioning row → taken over, provisioned, 200', async () => {
+    // A prior /start died mid-provision: the row is stuck in 'provisioning'.
+    mockExistingContainer({ status: 'provisioning', http_url: null, container_name: SPRITE_NAME })
+    mockEnsureContainer = async () => ({
+      name: SPRITE_NAME,
+      url: `https://${SPRITE_NAME}.sprites.app`,
+      provider: 'sprites',
+      freshlyProvisioned: true,
+    })
+    mockClientQueryImpl = async (sql: string) => {
+      // INSERT loses the ON CONFLICT race (row already exists).
+      if (/INSERT INTO pi\.containers/i.test(sql)) return { rows: [], rowCount: 0 }
+      // The stale-takeover UPDATE finds the abandoned row and claims it.
+      if (/UPDATE pi\.containers/i.test(sql) && /status = 'provisioning'/i.test(sql)) {
+        return { rows: [{ user_id: USER_ID }], rowCount: 1 }
+      }
+      return { rows: [], rowCount: 1 }
+    }
+
+    const app = makeApp()
+    const res = await app.request('/api/session/start', { method: 'POST' })
+    // Routed through the provision path (status==='provisioning'), took over the
+    // stale row, created + bootstrapped, finalized to 'active'.
+    expect(res.status).toBe(200)
+    expect(bootstrapCalls.length).toBe(1)
+    const poolSqls = poolCalls.map((c) => c.sql)
+    expect(
+      poolSqls.some((s) => /UPDATE pi\.containers/i.test(s) && /status = 'active'/i.test(s)),
+    ).toBe(true)
+  })
+
+  test('DB-25 — existing FRESH provisioning row → 409 (genuinely concurrent)', async () => {
+    mockExistingContainer({ status: 'provisioning', http_url: null, container_name: SPRITE_NAME })
+    mockEnsureContainer = async () => {
+      throw new Error('ensureContainer should not be called for a fresh concurrent row')
+    }
+    mockClientQueryImpl = async (sql: string) => {
+      if (/INSERT INTO pi\.containers/i.test(sql)) return { rows: [], rowCount: 0 }
+      // Stale-takeover UPDATE matches nothing — the row is too fresh.
+      if (/UPDATE pi\.containers/i.test(sql) && /status = 'provisioning'/i.test(sql)) {
         return { rows: [], rowCount: 0 }
       }
       return { rows: [], rowCount: 1 }

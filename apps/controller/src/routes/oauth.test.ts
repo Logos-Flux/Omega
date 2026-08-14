@@ -1,8 +1,13 @@
 import { describe, expect, test, beforeEach, afterEach, mock } from 'bun:test'
 import { Hono } from 'hono'
+import { createHmac } from 'node:crypto'
 
 // Fixed secrets for the test process. Keep these out of any production env.
 const TEST_HARNESS_SECRET = 'test-harness-secret-do-not-ship'
+// SEC-01 — the controller-only key that signs per-sprite mint tokens. Distinct
+// from TEST_HARNESS_SECRET on purpose: the whole point is that the Sprite's
+// HARNESS_JWT_SECRET cannot forge a mint token.
+const TEST_MINT_KEY = 'test-mint-signing-key-do-not-ship'
 const TEST_ENC_KEY = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
 
 // ---------- Module mocks ----------
@@ -53,6 +58,7 @@ const originalFetch = globalThis.fetch
 
 beforeEach(() => {
   process.env.HARNESS_JWT_SECRET = TEST_HARNESS_SECRET
+  process.env.CONTROLLER_MINT_SIGNING_KEY = TEST_MINT_KEY
   process.env.OAUTH_TOKEN_ENC_KEY = TEST_ENC_KEY
   process.env.GOOGLE_OAUTH_CLIENT_ID = 'test-client-id.apps.googleusercontent.com'
   process.env.GOOGLE_OAUTH_CLIENT_SECRET = 'test-client-secret'
@@ -204,7 +210,8 @@ describe('buildGoogleAuthUrl', () => {
     expect(u.searchParams.get('include_granted_scopes')).toBe('true')
     expect(u.searchParams.get('state')).toBe('state-value')
     const scope = u.searchParams.get('scope') ?? ''
-    expect(scope).toContain('https://www.googleapis.com/auth/drive.readonly')
+    expect(scope).toContain('https://www.googleapis.com/auth/drive')
+    expect(scope).not.toContain('drive.readonly')
     expect(scope).toContain('https://www.googleapis.com/auth/calendar')
     expect(scope).toContain('https://www.googleapis.com/auth/gmail.modify')
     expect(scope).toContain('openid')
@@ -294,6 +301,24 @@ describe('GET /api/oauth/google/callback', () => {
     expect(res.status).toBe(400)
   })
 
+  test('expired state renders a friendly HTML page, not raw JSON', async () => {
+    const app = makeApp()
+    // Negative TTL → exp in the past → verifyState throws "state expired".
+    const expired = oauth.signState({
+      userId: 'u',
+      returnTo: 'https://chat.omega.ai/',
+      ttlSec: -10,
+    })
+    const res = await app.request(
+      `/api/oauth/google/callback?code=xyz&state=${encodeURIComponent(expired)}`,
+    )
+    expect(res.status).toBe(400)
+    expect(res.headers.get('content-type')).toMatch(/text\/html/)
+    const body = await res.text()
+    expect(body).toMatch(/expired/i)
+    expect(body).toMatch(/try again/i)
+  })
+
   test('happy path: exchanges code, upserts row, redirects to return_to', async () => {
     const userId = 'cccccccc-1111-2222-3333-444444444444'
     const returnTo = 'https://chat.omega.ai/chat/'
@@ -372,8 +397,12 @@ describe('GET /api/oauth/google/callback', () => {
       `/api/oauth/google/callback?code=xxx&state=${encodeURIComponent(state)}`,
     )
     expect(res.status).toBe(500)
-    const body = (await res.json()) as { error: string }
-    expect(body.error).toMatch(/refresh_token/i)
+    // Callback now renders a user-facing HTML page (runs in the browser), not
+    // JSON. The no-refresh_token page tells the user to reconnect + points at
+    // the Google permissions page.
+    expect(res.headers.get('content-type')).toMatch(/text\/html/)
+    const body = await res.text()
+    expect(body).toMatch(/reconnect|permissions/i)
   })
 
   test('surfaces google token-endpoint failures as 502', async () => {
@@ -653,7 +682,28 @@ describe('GET /api/oauth/google/health', () => {
 // ---------- POST /access-token (Phase 0.B.3) ----------
 
 const VALID_USER_ID = 'aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee'
+const OTHER_USER_ID = '99999999-8888-4777-9666-555555555555'
 const TEST_SERVICE_TOKEN = 'test-controller-service-token-do-not-ship'
+
+// SEC-01 — build a per-sprite mint token the way the controller's signMintToken
+// does (HS256 over `header.payload` with CONTROLLER_MINT_SIGNING_KEY). Defaults
+// to the correct key; pass `secret` to forge a bad signature, `expSec` to expire.
+function signMintToken(
+  userId: string,
+  opts: { secret?: string; expSec?: number } = {},
+): string {
+  const secret = opts.secret ?? TEST_MINT_KEY
+  const now = Math.floor(Date.now() / 1000)
+  const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url')
+  const payload = Buffer.from(
+    JSON.stringify({ userId, exp: opts.expSec ?? now + 120 }),
+  ).toString('base64url')
+  const sig = createHmac('sha256', secret)
+    .update(`${header}.${payload}`)
+    .digest()
+    .toString('base64url')
+  return `${header}.${payload}.${sig}`
+}
 
 /**
  * Build a mock query implementation that:
@@ -845,6 +895,92 @@ describe('POST /api/oauth/google/access-token (service-bearer)', () => {
       'openid',
       'email',
     ])
+  })
+
+  test('SEC-01: 403 when mint-token userId != body userId', async () => {
+    const { encryptToken } = await import('../lib/crypto')
+    const ct = encryptToken('rt')
+    const calls: Array<{ sql: string; params: unknown[] }> = []
+    mockPool.query.mockImplementation(buildAccessTokenQueryMock(ct, calls))
+    // Google exchange must NOT be reached.
+    globalThis.fetch = mock(async () => {
+      throw new Error('fetch should not be called when scope check fails')
+    }) as unknown as typeof fetch
+
+    const app = makeApp()
+    const res = await app.request('/api/oauth/google/access-token', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        // Mint token is scoped to OTHER_USER_ID, but the body asks for VALID_USER_ID.
+        'x-mint-token': signMintToken(OTHER_USER_ID),
+      },
+      body: JSON.stringify({ userId: VALID_USER_ID }),
+    })
+    expect(res.status).toBe(403)
+    const body = (await res.json()) as { error: string }
+    expect(body.error).toBe('user_id_mismatch')
+  })
+
+  test('SEC-01: 401 when mint-token signature is invalid (HARNESS_JWT_SECRET cannot forge)', async () => {
+    const app = makeApp()
+    // Sign with the harness JWT secret — the secret a /proc-exfil attacker
+    // actually has. It must NOT be accepted: the mint token is a different signer.
+    const res = await app.request('/api/oauth/google/access-token', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-mint-token': signMintToken(VALID_USER_ID, { secret: TEST_HARNESS_SECRET }),
+      },
+      body: JSON.stringify({ userId: VALID_USER_ID }),
+    })
+    expect(res.status).toBe(401)
+    const body = (await res.json()) as { error: string }
+    expect(body.error).toBe('invalid_mint_token')
+  })
+
+  test('SEC-01: scoped mint proceeds on a valid mint token alone (no service bearer)', async () => {
+    const { encryptToken } = await import('../lib/crypto')
+    const ct = encryptToken('rt')
+    const calls: Array<{ sql: string; params: unknown[] }> = []
+    mockPool.query.mockImplementation(buildAccessTokenQueryMock(ct, calls))
+    globalThis.fetch = mock(
+      async () =>
+        new Response(
+          JSON.stringify({ access_token: 'ya29.scoped', expires_in: 3599, token_type: 'Bearer' }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+    ) as unknown as typeof fetch
+
+    // No CONTROLLER_SERVICE_TOKEN in the request — the harness path stands on
+    // the mint token alone (the service token is no longer in the Sprite).
+    const app = makeApp()
+    const res = await app.request('/api/oauth/google/access-token', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-mint-token': signMintToken(VALID_USER_ID),
+      },
+      body: JSON.stringify({ userId: VALID_USER_ID }),
+    })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { access_token: string }
+    expect(body.access_token).toBe('ya29.scoped')
+  })
+
+  test('SEC-01: 401 when mint token is expired', async () => {
+    const app = makeApp()
+    const res = await app.request('/api/oauth/google/access-token', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-mint-token': signMintToken(VALID_USER_ID, { expSec: 1 }),
+      },
+      body: JSON.stringify({ userId: VALID_USER_ID }),
+    })
+    expect(res.status).toBe(401)
+    const body = (await res.json()) as { error: string }
+    expect(body.error).toBe('invalid_mint_token')
   })
 
   test('200 omits email when chat.users row is missing (pathological state)', async () => {

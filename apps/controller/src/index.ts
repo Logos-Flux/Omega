@@ -9,6 +9,18 @@ import { oauthRoutes } from './routes/oauth'
 import { ragRoutes } from './routes/rag'
 import { requireSession } from './middleware/session'
 import { adminConfigured } from './middleware/admin'
+import { requireOriginSecret } from './middleware/origin-secret'
+import { getPool, hasDatabase } from './lib/db'
+
+// QUAL-12 — process-level crash backstops (see chat-api for rationale).
+process.on('unhandledRejection', (reason) => {
+  console.error('[controller] unhandledRejection — exiting', reason)
+  process.exit(1)
+})
+process.on('uncaughtException', (err) => {
+  console.error('[controller] uncaughtException — exiting', err)
+  process.exit(1)
+})
 
 const app = new Hono()
 
@@ -22,6 +34,37 @@ app.get('/', (c) =>
   c.json({ name: 'Omega Controller', version: '0.1.0', status: 'running' }),
 )
 app.get('/healthz', (c) => c.json({ status: 'ok' }))
+
+// OPS-11 — readiness probe with a DB dependency check (see chat-api).
+app.get('/readyz', async (c) => {
+  if (!hasDatabase) return c.json({ status: 'ready', db: 'disabled' })
+  let probeTimer: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([
+      getPool().query('SELECT 1'),
+      new Promise((_, rej) => {
+        probeTimer = setTimeout(() => rej(new Error('db probe timeout')), 2000)
+      }),
+    ])
+    return c.json({ status: 'ready' })
+  } catch (e) {
+    // Unauthenticated probe — don't echo the raw pg error (can leak host /
+    // credentials, e.g. "password authentication failed for user ..."). Log
+    // the real reason, return a fixed token.
+    console.error('[readyz] db probe failed:', (e as Error).message)
+    return c.json({ status: 'not_ready', error: 'db_unreachable' }, 503)
+  } finally {
+    // SELECT 1 winning the race leaves the 2s timer pending — clear it so a
+    // frequently-polled /readyz doesn't leak a timer per request.
+    clearTimeout(probeTimer)
+  }
+})
+
+// SEC-03 — origin-secret gate on all /api/* (no-op until ORIGIN_SHARED_SECRET
+// is set). s2s callers (mint endpoint, rag proxy) carry Authorization: Bearer
+// and are deferred to their own bearer middleware; browser routes must carry
+// the CF-injected header.
+app.use('/api/*', requireOriginSecret)
 
 app.get('/api/me', requireSession, (c) => c.json({ user: c.get('user') }))
 
@@ -66,8 +109,10 @@ if (!adminConfigured) {
   console.warn('[controller] ADMIN_BEARER_TOKEN not set — /api/admin/* will return 503')
 }
 
+// DB-08 — fail the boot if migrations fail (see chat-api for rationale).
 await runMigrations().catch((err) => {
-  console.error('[controller] migrations failed', err)
+  console.error('[controller] migrations failed — exiting', err)
+  process.exit(1)
 })
 
 serve({ fetch: app.fetch, port }, (info) => {
