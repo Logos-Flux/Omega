@@ -26,7 +26,10 @@ jobs:
         with:
           bun-version: latest
       - run: bun install --frozen-lockfile
-      - run: bun tsc --noEmit
+      # -b is required: chat-frontend uses a solution-style tsconfig
+      # (references + empty files), which plain `tsc --noEmit` silently
+      # skips — it reported green while the app had type errors.
+      - run: bun tsc -b --noEmit
         working-directory: ${{ matrix.app }}
 
   test:
