@@ -3,7 +3,7 @@ import {
   ComposerPrimitive,
   MessagePrimitive,
   ThreadPrimitive,
-  useMessage,
+  useAuiState,
 } from '@assistant-ui/react'
 import { useQuickActions } from '../../lib/quick-actions'
 import { brand } from '../../lib/brand'
@@ -279,20 +279,22 @@ const ToolCallChip: ToolCallMessagePartComponent = ({
   )
 }
 
-function SourcePart({ id, url, title }: { id: string; url: string; title?: string }) {
-  // useMessage() without a selector returns a stable reference to the
-  // message state — the parts array only changes when content actually
-  // changes. Using `useMessage(m => m.content.filter(...).map(...))`
-  // would allocate a fresh array on every read and trigger an infinite
-  // re-render loop, which surfaced as a white screen the moment any
-  // source-emitting provider answered.
-  const message = useMessage()
-  let num: number | null = null
-  if (message?.role === 'assistant') {
-    const parts = message.content as ReadonlyArray<{ type: string; id?: string }>
+// Accepts the full 0.15 source-part union: url sources (Perplexity,
+// Gemini grounding) and document sources, whose `url` is undefined.
+function SourcePart({ id, url, title }: { id: string; url?: string; title?: string }) {
+  // The selector must return a referentially stable value — returning a
+  // fresh array (e.g. `s.message.content.filter(...)`) would defeat the
+  // Object.is comparison and re-render on every store update, which
+  // surfaced as a white screen the moment any source-emitting provider
+  // answered. A primitive (number | null) is always safe.
+  const num = useAuiState((s) => {
+    if (s.message.role !== 'assistant') return null
+    const parts = s.message.content as ReadonlyArray<{ type: string; id?: string }>
     const idx = parts.filter((p) => p.type === 'source').findIndex((p) => p.id === id)
-    if (idx >= 0) num = idx + 1
-  }
+    return idx >= 0 ? idx + 1 : null
+  })
+  // Document sources carry no link; the harness only emits url sources.
+  if (!url) return null
   const display =
     title || (() => { try { return new URL(url).hostname.replace(/^www\./, '') } catch { return url } })()
   return (
