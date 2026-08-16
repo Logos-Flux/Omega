@@ -15,7 +15,7 @@
         "@ai-sdk/perplexity": "^4.0.1",
         "@hono/node-server": "^2.1.0",
         "ai": "^7.0.4",
-        "hono": "^4.13.1",
+        "hono": "^4.13.2",
         "jose": "^6.2.3",
         "pg": "^8.20.0",
         "zod": "^4.4.3",
@@ -65,7 +65,7 @@
       "dependencies": {
         "@hono/node-server": "^2.1.0",
         "aws4fetch": "^1.0.20",
-        "hono": "^4.13.1",
+        "hono": "^4.13.2",
         "jose": "^6.2.3",
         "pg": "^8.20.0",
       },
@@ -97,7 +97,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@hono/node-server": "^2.1.0",
-        "hono": "^4.13.1",
+        "hono": "^4.13.2",
         "pg": "^8.20.0",
       },
       "devDependencies": {
@@ -604,7 +604,7 @@
 
     "hast-util-whitespace": ["hast-util-whitespace@3.0.0", "", { "dependencies": { "@types/hast": "^3.0.0" } }, "sha512-88JUN06ipLwsnv+dVn+OIYOvAuvBMy/Qoi6O7mQHxdPXpjy+Cd6xRkWwux7DKO+4sYILtLBRIKgsdpS2gQc7qw=="],
 
-    "hono": ["hono@4.13.1", "", {}, "sha512-kdJoFVv2xmayw6cY09H7AbMJMt8Jn5jdlEdXsP7AGBdF2DIptVlKlOLKXP41yPip4/a3yQPv9gVcJYI8YY04dw=="],
+    "hono": ["hono@4.13.2", "", {}, "sha512-JydRilDRkYBQMt9qR9U92mXxmbGqsqSn/IKOrh4e7/gEbn+0zSr8igTu0obwJoNGN4sez28DIql7FBHWydoJpA=="],
 
     "html-url-attributes": ["html-url-attributes@3.0.1", "", {}, "sha512-ol6UPyBWqsrO6EJySPz2O7ZSr856WDrEzM5zMqp+FJJLGMW35cLYmmZnl0vztAZxRUoNZJFTCohfjuIJ8I4QBQ=="],
 
