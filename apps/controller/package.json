@@ -12,9 +12,9 @@
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
-    "@hono/node-server": "^2.1.0",
+    "@hono/node-server": "^2.1.1",
     "aws4fetch": "^1.0.20",
-    "hono": "^4.13.1",
+    "hono": "^4.13.3",
     "jose": "^6.2.3",
     "pg": "^8.20.0"
   },
