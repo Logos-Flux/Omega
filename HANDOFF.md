@@ -1,3 +1,5 @@
+> OUT OF DATE — see OpenProject WPs for current status. Last reviewed: 2026-09-26. (PRs #43 and #44 have since merged; open Dependabot PRs #46–#50 exist; the Caddyfile.52launch item below is now gitignored.)
+
 # Handoff — 2026-08-13
 
 ## Current state

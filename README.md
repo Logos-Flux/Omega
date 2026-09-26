@@ -20,7 +20,7 @@ compute orchestrator, **pi-harness** agent runtime, and a RAG service. Apache-2.
 
 ```
 ┌──────────────┐  /api/*           ┌──────────────┐
-│ chat-frontend│ ───────────────▶  │  chat-api    │  HTTP streaming chat (AI SDK v5)
+│ chat-frontend│ ───────────────▶  │  chat-api    │  HTTP streaming chat (AI SDK v7)
 │  (SPA + Caddy)│                  └──────────────┘
 │              │  /api/controller/*┌──────────────┐  /docker.sock          ┌──────────────┐
 │              │ ───────────────▶  │  controller  │ ─────────────────────▶ │  pi-harness  │
@@ -68,7 +68,7 @@ Working on Omega locally:
 
 ```bash
 bun install                    # install all workspace deps
-bun test                       # run the full test suite (158 tests across apps)
+bun test                       # run the full test suite (431 tests across 47 files)
 bun --cwd apps/chat-api tsc --noEmit   # per-app typecheck (substitute any app)
 ```
 
@@ -90,7 +90,7 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for the contribution workflow,
 
 ```
 apps/
-├── chat-api/         Bun + Hono chat backend (AI SDK v5 streaming)
+├── chat-api/         Bun + Hono chat backend (AI SDK v7 streaming)
 ├── chat-frontend/    React 19 + Vite + assistant-ui SPA, Caddy-served
 ├── controller/       Sandbox orchestrator (ComputeProvider = sprites|docker)
 ├── pi-harness/       Bun WS server that lives inside each user's sandbox

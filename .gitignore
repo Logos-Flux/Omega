@@ -36,6 +36,7 @@ apps/controller/goldens/*/
 apps/chat-frontend/Caddyfile.local*
 apps/chat-frontend/Caddyfile.prod*
 apps/chat-frontend/Caddyfile.staging*
+apps/chat-frontend/Caddyfile.52launch
 
 # Local Hermes agent scratch (plans, transcripts)
 .hermes/
