@@ -5,16 +5,77 @@ All notable changes to Omega are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.6.2] - Unreleased
+## [0.7.0] - 2026-09-26
 
-Chat-frontend polish — closes two ride-along bugs surfaced during the
-multi-tenant Fly staging shakeout that the v0.6.1 cutover-blocker work didn't
-cover. Both regressed real first-touch UX for brand-new users on
-multi-tenant deploys: the Settings page showed a session-open error
-toast on every load, and Settings → Connectors had no way to start
-the Drive OAuth flow at all (the staging team worked around it by
-hand-crafting an `/api/oauth/google/start` URL). Pure
-chat-frontend changes; no backend, env, or schema impact.
+Security hardening, framework/capability sync, AI SDK v7 migration, and
+dependency refresh. Operators: this release adds one required env var for
+Google-OAuth deployments (`CONTROLLER_MINT_SIGNING_KEY`) — see Security
+below. Migrations apply at boot via the new tracked migrator; existing
+deployments re-apply the (idempotent) historical files once into the new
+ledger.
+
+### Security
+
+- **Per-user mint-token scoping.** The Google-token mint flow now requires
+  a per-user token signed by the controller (`CONTROLLER_MINT_SIGNING_KEY`,
+  documented in `apps/controller/.env.example`). A harness can only mint
+  credentials for its own user; session resume/end are scoped to the
+  calling user's rows. Without the key the mint endpoint refuses to
+  operate.
+- **Thread ownership guard.** A chat turn referencing a thread owned by a
+  different user is rejected with 404 and persists nothing.
+- **Exec/shell child-env allowlist.** Harness-spawned child processes get
+  an explicit allowlist of named, non-secret variables instead of
+  prefix-based forwarding, which could leak provider credentials into
+  tool output.
+- **Origin shared-secret middleware (opt-in).** When `ORIGIN_SHARED_SECRET`
+  is set, browser requests must carry an edge-injected header, rejecting
+  direct hits to the origin. Unset = disabled; local dev unaffected.
+  Applied to chat-api, controller, and rag-api.
+
+### Added
+
+- **Agent shell + native Drive tools (pi-harness):** curated `exec`
+  binary allowlist (incl. tesseract/pdftoppm for OCR); Shared-Drive-aware
+  `drive_search` / `drive_fetch_file` / `drive_copy_file` / `drive_comment`;
+  Gemini File Search retrieval provider.
+- **Per-user capabilities:** skill toggle, auto skill generator
+  (`write_skill` + `skill-creator` skill), persona presets
+  (coder / concise / researcher) with picker, user-visible memory store
+  (`GET/PUT/DELETE /memory`), `ocr` skill, `image-gen` (Ideogram, gated
+  on `IDEOGRAM_API_KEY`), centralized `/workspace/state.json`.
+- **DeepSeek** as a selectable provider.
+- **RAG durability:** ingest heartbeat lease, `finishJob` status guard,
+  zombie-job reaping, no phantom users.
+- **Reliability:** crash backstops, `/readyz` dependency probes,
+  provisioning-row reservation closing a `/start` race, harness liveness
+  probe that self-heals cold sprites on resume.
+- **Frontend:** error boundary, agent-mode session save/load +
+  thread switcher/resume, resilient Google reconnect UX, self-hosted
+  fonts, immutable asset caching, bundle split + a11y, settings UI for
+  personas/skills/memory.
+- Chat-frontend polish — closes two ride-along bugs from the
+  multi-tenant Fly staging shakeout: the Settings page showed a
+  session-open error toast on every load, and Settings → Connectors had
+  no way to start the Drive OAuth flow (now a Connect Drive CTA).
+  `getRagStatus()` treats rag-api 404 as "unknown user", not an error.
+
+### Changed
+
+- **AI SDK v5 → v7** (`ai` 7.x, `allowSystemInMessages` engine support,
+  `useMessage` → `useAuiState` in chat-frontend).
+- **Tracked, advisory-locked, fail-closed migrator** shared by all apps;
+  pool timeouts; message pagination; provisioning reshape. New
+  idempotent migrations: chat-api `0003`, controller `0004`, rag-api
+  `0005`/`0006`.
+- **Root type-check covers all six apps** (`tsc -b --noEmit`; plain
+  `--noEmit` silently skipped the solution-style frontend tsconfig) plus
+  a pre-push hook mirroring CI (`git config core.hooksPath .githooks`).
+- Dependency refresh: TypeScript 7, hono group, jose 6.2.8, googleapis
+  174, assistant-ui 0.15.14, tailwindcss 4.3.3, react group, ai-sdk group;
+  removed unused `@ai-sdk/react` from chat-frontend.
+- Cleanup: legacy `52l.chat.*` → `omega.chat.*` localStorage shims
+  removed; residual deployment-specific wording generalized.
 
 ### Fixed
 
@@ -27,27 +88,10 @@ chat-frontend changes; no backend, env, or schema impact.
   loop (1.5s, then 4s) so a Settings open racing the chat surface's
   first-sign-in provisioning resolves cleanly on the existing-row
   retry instead of bubbling the 409 to the user.
-
-### Added
-
-- **`not-connected` view state in `<DriveConnectPane>`** with a
-  Connect Drive CTA that top-level-navigates to
-  `/api/oauth/google/start?return_to=...` via the existing
-  `buildOAuthStartUrl()` helper. Triggers on either a `/status` 404
-  (no `rag.users` row yet — brand-new user who hasn't OAuth'd) or
-  `drive_oauth_status !== 'ok'` (row exists but the OAuth flow never
-  landed a token, e.g. user bounced from the consent page). Before
-  this, both states fell into the generic error pane with no path
-  forward.
-- **`getRagStatus()` in `apps/chat-frontend/src/lib/rag-api.ts`** now
-  returns `RagStatus | null` instead of throwing on 404. The rag-api
-  documents 404 as the "unknown user" sentinel — explicitly *not* an
-  error, just a signal that no row exists yet — and the frontend now
-  treats it that way. All other 4xx/5xx still throw. `<FilesystemPane>`
-  handles the same `null` case as an operator-not-seeded error since
-  filesystem mode has no per-user OAuth.
-- **`RagApiError` is now exported** from `rag-api.ts`. Callers that
-  need to discriminate by HTTP status can `instanceof`-check it.
+- **`getRagStatus()`** treats rag-api 404 as "unknown user" sentinel
+  (`RagStatus | null`); `RagApiError` exported for status
+  discrimination; `<DriveConnectPane>` gains a `not-connected` state
+  with a Connect Drive CTA.
 
 ## [0.6.1] - 2026-05-12
 
