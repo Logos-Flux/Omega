@@ -12,7 +12,7 @@
   },
   "dependencies": {
     "@ai-sdk/react": "^4.0.5",
-    "@assistant-ui/react": "^0.15.13",
+    "@assistant-ui/react": "^0.15.14",
     "@assistant-ui/react-ai-sdk": "^1.4.5",
     "@assistant-ui/react-markdown": "^0.14.10",
     "@fontsource/inter": "^5.2.8",
