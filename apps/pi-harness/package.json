@@ -14,12 +14,12 @@
     "test:update": "UPDATE_SNAPSHOTS=1 bun test"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "^4.0.1",
-    "@ai-sdk/deepseek": "^3.0.28",
-    "@ai-sdk/google": "^4.0.2",
-    "@ai-sdk/perplexity": "^4.0.1",
+    "@ai-sdk/anthropic": "^4.0.63",
+    "@ai-sdk/deepseek": "^3.0.52",
+    "@ai-sdk/google": "^4.0.80",
+    "@ai-sdk/perplexity": "^4.0.50",
     "@ai-sdk/provider-utils": "^5.0.1",
-    "ai": "^7.0.4",
+    "ai": "^7.0.114",
     "zod": "^4.4.1"
   },
   "devDependencies": {
