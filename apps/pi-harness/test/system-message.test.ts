@@ -26,7 +26,7 @@ const WORK_ROOT = mkdtempSync(join(tmpdir(), 'pi-harness-snap-'))
 process.env.WORKSPACE_ROOT = WORK_ROOT
 mkdirSync(join(WORK_ROOT, 'conversations'), { recursive: true })
 
-import { afterAll, describe, expect, test } from 'bun:test'
+import { afterAll, afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { dirname } from 'node:path'
@@ -43,6 +43,18 @@ const { PromptAssembler } = await import('../src/assembler')
 const HERE = dirname(fileURLToPath(import.meta.url))
 const FIXTURES_DIR = join(HERE, 'fixtures')
 const UPDATE = process.env.UPDATE_SNAPSHOTS === '1'
+
+// These fixtures describe provider-native grounding. Search routing and the
+// unconfigured default are exercised separately in web-search.test.ts.
+let savedWebSearch: string | undefined
+beforeEach(() => {
+  savedWebSearch = process.env.WEB_SEARCH_PROVIDER
+  process.env.WEB_SEARCH_PROVIDER = 'native'
+})
+afterEach(() => {
+  if (savedWebSearch === undefined) delete process.env.WEB_SEARCH_PROVIDER
+  else process.env.WEB_SEARCH_PROVIDER = savedWebSearch
+})
 
 interface Upload {
   filename: string
