@@ -1,4 +1,4 @@
-FROM oven/bun:1 AS builder
+FROM oven/bun:1.4.4 AS builder
 WORKDIR /omega
 
 # Bring in workspace plumbing so the workspace dep `@omega-inc/app-shell`
