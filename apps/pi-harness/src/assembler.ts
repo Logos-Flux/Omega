@@ -55,6 +55,7 @@ import {
   type Profile,
 } from './profile'
 import { isRagEnabled, searchRag } from './lib/rag'
+import { parallelWebTools, resolveWebSearch, type WebSearchProvider } from './lib/web-search'
 
 // ---
 // Cache marker helpers. Slots 1–7 are the "stable prefix" — the bits
@@ -168,7 +169,7 @@ function buildCurrentTime(now: Date, timezone?: string): string {
   }
 }
 
-function buildOperatorPolicy(provider: ProviderId, now: Date, timezone?: string): string {
+function buildOperatorPolicy(provider: ProviderId, now: Date, timezone?: string, webSearch?: WebSearchProvider, denied: string[] = []): string {
   const today = formatDateInTz(now, timezone)
   const geminiFileSearch = provider === 'google' && isGeminiFileSearchEnabled()
 
@@ -177,7 +178,9 @@ function buildOperatorPolicy(provider: ProviderId, now: Date, timezone?: string)
   // Live web/grounding tool. File Search is mutually exclusive with
   // google_search, so the Gemini File Search path has no web tool.
   const webTool =
-    provider === 'anthropic'
+    webSearch === 'none' || denied.includes('web_search')
+      ? null
+      : webSearch === 'parallel' || provider === 'anthropic'
       ? 'web_search'
       : provider === 'google' && !geminiFileSearch
         ? 'google_search'
@@ -386,6 +389,9 @@ function toolsForProvider(
   provider: ProviderId,
   sessionId: string,
   userId: string,
+  model: string,
+  webSearch: WebSearchProvider,
+  denied: string[],
 ): ToolSet | undefined {
   if (provider === 'perplexity') return undefined
   const tools: Record<string, unknown> = {
@@ -754,7 +760,10 @@ function toolsForProvider(
       },
     })
   }
-  if (provider === 'anthropic') {
+  if (webSearch === 'parallel') {
+    Object.assign(tools, parallelWebTools(sessionId, userId, model))
+  }
+  if (provider === 'anthropic' && webSearch === 'native') {
     tools.web_search = anthropicTools.tools.webSearch_20250305({ maxUses: 5 })
   }
   if (provider === 'google') {
@@ -765,12 +774,17 @@ function toolsForProvider(
       tools.file_search = googleProvider.tools.fileSearch({
         fileSearchStoreNames: [geminiFileSearchStore()],
       })
-    } else {
+    } else if (webSearch === 'native') {
       // Tool name MUST be `google_search` for Gemini to recognize it as the
       // server-side grounding tool. Args are empty — Gemini composes queries
       // from conversation context.
       tools.google_search = googleProvider.tools.googleSearch({})
     }
+  }
+  // Apply web-tool denials to both implementations so changing providers cannot
+  // turn a denied search back on. Other tool policy remains with its own gates.
+  for (const name of ['web_search', 'web_fetch', 'google_search']) {
+    if (denied.includes(name) || (name === 'google_search' && denied.includes('web_search'))) delete tools[name]
   }
   return tools as ToolSet
 }
@@ -820,7 +834,11 @@ export const PromptAssembler = {
     const profile = renderProfile(rawProfile)
     const timezone = invocation.timezone ?? rawProfile.timezone
 
-    const operatorPolicy = buildOperatorPolicy(provider, now, timezone) // 2
+    const persona = await PersonaRegistry.get(personaName)
+    const denied = [...(persona?.toolsDenied ?? []), ...(invocation.policy.toolsDenied ?? [])]
+    if (denied.includes('google_search')) denied.push('web_search')
+    const webSearch = resolveWebSearch(provider)
+    const operatorPolicy = buildOperatorPolicy(provider, now, timezone, webSearch, denied) // 2
     const currentTime = buildCurrentTime(now, timezone) // 2b (volatile)
     const triggerPayload = readTriggerPayloadSlot(invocation) // 11
 
@@ -916,7 +934,7 @@ export const PromptAssembler = {
       modelMessages.push({ role: 'user', content: prompt })
     }
 
-    const tools = toolsForProvider(provider, sessionId, invocation.userId)
+    const tools = toolsForProvider(provider, sessionId, invocation.userId, invocation.model, webSearch, denied)
 
     return {
       systemMessages,

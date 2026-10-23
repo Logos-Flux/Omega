@@ -157,6 +157,33 @@ by env (`COMPUTE_PROVIDER`) so adding a new one doesn't touch any routes.
 
 ## Optional features
 
+### Agent Mode web search
+
+The pi-harness agent can search the public web and read pages through
+[Parallel Search MCP](https://docs.parallel.ai/integrations/mcp/search-mcp),
+using Fast mode for search without a Parallel account or API key. Results include
+source URLs for citations. Queries and requested URLs are sent to Parallel;
+private documents belong in the existing upload, Drive or RAG tools.
+
+Set `WEB_SEARCH_PROVIDER` in the **pi-harness process environment**:
+
+| Value | Behavior |
+|---|---|
+| `auto` (default) | Keep native search when the selected Anthropic/Gemini provider has a configured API key, when Gemini File Search is configured, or when using Perplexity Sonar. Otherwise use Parallel. |
+| `parallel` | Expose `web_search` and `web_fetch` with Anthropic, Gemini or DeepSeek. |
+| `native` | Keep the selected model provider's search tools. DeepSeek has no native web search. |
+| `none` | Omit harness web tools. This cannot disable search built into Perplexity Sonar. |
+
+For Docker or Sprites, include the setting in your harness image or per-user
+runtime environment; setting it only on the controller does not forward it.
+Existing model selections and credentials stay in place. Parallel does not
+replace a failed native search automatically. Persona `tools_denied` and
+invocation `toolsDenied` can deny `web_search` (including `google_search`) and
+`web_fetch`. Anonymous service limits and errors are returned to the agent;
+each call has a 30-second deadline and follows turn cancellation.
+
+### Other optional features
+
 - **Google OAuth** (Drive + Calendar + Gmail per user) is opt-in: set
   `ENABLE_GOOGLE_OAUTH=true` on the controller and configure
   `GOOGLE_OAUTH_CLIENT_ID/SECRET`. Disabled by default.
