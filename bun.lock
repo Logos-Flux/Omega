@@ -16,7 +16,7 @@
         "@hono/node-server": "^2.1.5",
         "ai": "^7.0.4",
         "hono": "^4.13.13",
-        "jose": "^6.2.13",
+        "jose": "^6.2.17",
         "pg": "^8.20.0",
         "zod": "^4.4.3",
       },
@@ -65,7 +65,7 @@
         "@hono/node-server": "^2.1.5",
         "aws4fetch": "^1.0.20",
         "hono": "^4.13.13",
-        "jose": "^6.2.13",
+        "jose": "^6.2.17",
         "pg": "^8.20.0",
       },
       "devDependencies": {
@@ -623,7 +623,7 @@
 
     "jiti": ["jiti@2.6.1", "", { "bin": { "jiti": "lib/jiti-cli.mjs" } }, "sha512-ekilCSN1jwRvIbgeg/57YFh8qQDNbwDb9xT/qu2DAHbFFZUicIl4ygVaAvzveMhMVr3LnpSKTNnwt8PoOfmKhQ=="],
 
-    "jose": ["jose@6.2.13", "", {}, "sha512-7TIg10ZE1x82YediN+lcrPNvGMKge9yFHQD+Qho/b8y2adfugU3AsvvHfxV0fzyFllT6l9xCjf4RWY9g/Z9PJQ=="],
+    "jose": ["jose@6.2.17", "", {}, "sha512-wOuK9V1yujQFH5S0ZWmLcDZN7+IKh9bUCC2ZPCf2HDlol3WWHy+PPyNjEI75FXRLMp3vDKQcupP59xhVU95hcg=="],
 
     "json-bigint": ["json-bigint@1.0.0", "", { "dependencies": { "bignumber.js": "^9.0.0" } }, "sha512-SiPv/8VpZuWbvLSMtTDU8hEfrZWg/mH/nV/b4o0CYbSxu1UIQPLdwKOCIyLQX+VIPO5vrLX3i8qtqFyhdPSUSQ=="],
 
